@@ -1,0 +1,54 @@
+APP := nonet
+STATIC_APP := $(APP)-static
+BUILD_DIR := $(CURDIR)/build
+BIN_ROOT_DIR := $(BUILD_DIR)/bin
+HOST_BIN_DIR := $(BIN_ROOT_DIR)/host
+HOST_BIN := $(HOST_BIN_DIR)/$(APP)
+STATIC_BIN := $(HOST_BIN_DIR)/$(STATIC_APP)
+GO_SOURCES := $(wildcard *.go)
+GOCACHE := $(BUILD_DIR)/gocache
+GOMODCACHE := $(BUILD_DIR)/gomodcache
+GOPATH := $(BUILD_DIR)/gopath
+GOTMPDIR := $(BUILD_DIR)/tmp
+GOTELEMETRYDIR := $(BUILD_DIR)/telemetry
+GOENV := off
+GOFLAGS := -modcacherw
+GOOS ?= linux
+GOARCH ?= $(shell go env GOARCH)
+STATIC_LDFLAGS := -linkmode external -extldflags "-static" -s -w
+
+export GOCACHE
+export GOMODCACHE
+export GOPATH
+export GOTMPDIR
+export GOTELEMETRYDIR
+export GOENV
+export GOFLAGS
+export GOTELEMETRY=off
+
+.PHONY: all build static test run clean
+
+all: build
+
+build: $(HOST_BIN)
+
+static: $(STATIC_BIN)
+
+test:
+	mkdir -p "$(BUILD_DIR)" "$(GOCACHE)" "$(GOMODCACHE)" "$(GOPATH)" "$(GOTMPDIR)" "$(GOTELEMETRYDIR)"
+	go test ./...
+
+$(HOST_BIN): go.mod $(GO_SOURCES)
+	mkdir -p "$(HOST_BIN_DIR)" "$(GOCACHE)" "$(GOMODCACHE)" "$(GOPATH)" "$(GOTMPDIR)" "$(GOTELEMETRYDIR)"
+	go build -o "$(HOST_BIN)" .
+
+$(STATIC_BIN): go.mod $(GO_SOURCES)
+	mkdir -p "$(HOST_BIN_DIR)" "$(GOCACHE)" "$(GOMODCACHE)" "$(GOPATH)" "$(GOTMPDIR)" "$(GOTELEMETRYDIR)"
+	CGO_ENABLED=1 GOOS="$(GOOS)" GOARCH="$(GOARCH)" go build -trimpath -ldflags='$(STATIC_LDFLAGS)' -o "$(STATIC_BIN)" .
+
+run: build
+	"$(HOST_BIN)"
+
+clean:
+	chmod -R u+w "$(BUILD_DIR)" 2>/dev/null || true
+	rm -rf "$(BUILD_DIR)"
