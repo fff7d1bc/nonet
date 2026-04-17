@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"net"
@@ -10,61 +11,113 @@ import (
 	"syscall"
 )
 
+type selfTestReport struct {
+	failures int
+}
+
+func (r *selfTestReport) pass(format string, args ...any) {
+	fmt.Printf("[✓] "+format+"\n", args...)
+}
+
+func (r *selfTestReport) fail(format string, args ...any) {
+	r.failures++
+	fmt.Printf("[x] "+format+"\n", args...)
+}
+
+func (r *selfTestReport) err() error {
+	if r.failures == 0 {
+		return nil
+	}
+	if r.failures == 1 {
+		return errors.New("self-test failed with 1 problem")
+	}
+	return fmt.Errorf("self-test failed with %d problems", r.failures)
+}
+
 func runSelfTest() error {
+	report := &selfTestReport{}
+
 	uid := os.Getuid()
 	gid := os.Getgid()
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("resolve home directory: %w", err)
+		report.fail("resolve home directory: %v", err)
+	} else {
+		report.pass("caller uid=%d gid=%d home=%s", uid, gid, home)
 	}
 
-	fmt.Printf("uid=%d gid=%d\n", uid, gid)
 	if value, err := os.ReadFile("/proc/sys/kernel/unprivileged_userns_clone"); err == nil {
-		fmt.Printf("unprivileged_userns_clone: %s\n", strings.TrimSpace(string(value)))
+		report.pass("kernel.unprivileged_userns_clone=%s", strings.TrimSpace(string(value)))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		report.fail("read /proc/sys/kernel/unprivileged_userns_clone: %v", err)
 	}
 
 	if err := runEndToEndProbe(uid, gid, home); err != nil {
-		return fmt.Errorf("end-to-end probe failed: %w", err)
+		report.fail("end-to-end probe: %v", err)
+	} else {
+		report.pass("end-to-end probe completed")
 	}
 
-	fmt.Println("self-test: ok")
+	if err := report.err(); err != nil {
+		return err
+	}
+	report.pass("self-test completed")
 	return nil
 }
 
 func runInternalProbe(expectUID, expectGID int, expectHome string) error {
+	report := &selfTestReport{}
+
 	if expectUID >= 0 && os.Getuid() != expectUID {
-		return fmt.Errorf("uid mismatch: got %d want %d", os.Getuid(), expectUID)
+		report.fail("uid matches caller: got %d want %d", os.Getuid(), expectUID)
+	} else if expectUID >= 0 {
+		report.pass("uid matches caller: %d", os.Getuid())
 	}
 	if expectGID >= 0 && os.Getgid() != expectGID {
-		return fmt.Errorf("gid mismatch: got %d want %d", os.Getgid(), expectGID)
+		report.fail("gid matches caller: got %d want %d", os.Getgid(), expectGID)
+	} else if expectGID >= 0 {
+		report.pass("gid matches caller: %d", os.Getgid())
 	}
 	if expectHome != "" {
 		if _, err := os.ReadDir(expectHome); err != nil {
-			return fmt.Errorf("home access check failed for %s: %w", expectHome, err)
+			report.fail("home access check for %s: %v", expectHome, err)
+		} else {
+			report.pass("home access check: %s", expectHome)
 		}
 	}
 
 	names, err := interfaceNames()
 	if err != nil {
-		return fmt.Errorf("list interfaces: %w", err)
+		report.fail("list interfaces: %v", err)
+	} else if !onlyLoopback(names) {
+		report.fail("only loopback interface is present: %s", formatInterfaceList(names))
+	} else {
+		report.pass("only loopback interface is present: %s", formatInterfaceList(names))
 	}
-	if !onlyLoopback(names) {
-		return fmt.Errorf("unexpected interfaces present: %s", formatInterfaceList(names))
+	hasDefaultRoute, err := hasDefaultRoute()
+	if err != nil {
+		report.fail("inspect routes: %v", err)
+	} else if hasDefaultRoute {
+		report.fail("default route is absent")
+	} else {
+		report.pass("default route is absent")
 	}
 
 	flags, err := linkFlags(loopbackName)
 	if err != nil {
-		return fmt.Errorf("inspect loopback flags: %w", err)
-	}
-	if flags&syscall.IFF_UP == 0 {
-		return errors.New("loopback is not up")
+		report.fail("inspect loopback flags: %v", err)
+	} else if flags&syscall.IFF_UP == 0 {
+		report.fail("loopback is up")
+	} else {
+		report.pass("loopback is up")
 	}
 	if err := probeLoopbackTCP(); err != nil {
-		return fmt.Errorf("loopback probe failed: %w", err)
+		report.fail("loopback TCP probe: %v", err)
+	} else {
+		report.pass("loopback TCP probe succeeded")
 	}
 
-	fmt.Printf("probe: uid=%d gid=%d lo=up loopback=tcp-ok\n", os.Getuid(), os.Getgid())
-	return nil
+	return report.err()
 }
 
 func runEndToEndProbe(uid, gid int, home string) error {
@@ -115,4 +168,66 @@ func probeLoopbackTCP() error {
 	conn.Close()
 
 	return <-errCh
+}
+
+func hasDefaultRoute() (bool, error) {
+	v4, err := hasDefaultRouteV4("/proc/net/route")
+	if err != nil {
+		return false, err
+	}
+	if v4 {
+		return true, nil
+	}
+	return hasDefaultRouteV6("/proc/net/ipv6_route")
+}
+
+func hasDefaultRouteV4(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	first := true
+	for scanner.Scan() {
+		if first {
+			first = false
+			continue
+		}
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 8 {
+			continue
+		}
+		if fields[0] != loopbackName && fields[1] == "00000000" && fields[7] == "00000000" {
+			return true, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func hasDefaultRouteV6(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 10 {
+			continue
+		}
+		if fields[9] != loopbackName && fields[0] == strings.Repeat("0", 32) && fields[1] == "00" {
+			return true, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
