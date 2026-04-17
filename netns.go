@@ -16,28 +16,6 @@ type ifreqFlags struct {
 	Pad   [22]byte
 }
 
-func setLinkUp(name string) error {
-	flags, err := linkFlags(name)
-	if err != nil {
-		return err
-	}
-
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("open control socket: %w", err)
-	}
-	defer syscall.Close(fd)
-
-	var req ifreqFlags
-	copy(req.Name[:], name)
-	req.Flags = flags | syscall.IFF_UP
-
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(syscall.SIOCSIFFLAGS), uintptr(unsafe.Pointer(&req))); errno != 0 {
-		return errno
-	}
-	return nil
-}
-
 func linkFlags(name string) (uint16, error) {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
