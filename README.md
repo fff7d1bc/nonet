@@ -99,6 +99,8 @@ gid_map: <gid> <gid> 1
 
 That keeps the final command's visible UID/GID unchanged.
 
+Other IDs are not preserved. In particular, host-owned `0:0` objects such as `/` will usually appear as the overflow owner/group, just as they do under `unshare` with a simple current-user mapping. So behavior for owners other than the current user is intentionally on par with `unshare`, not a special remapping done by `nonet`.
+
 This is enough because `nonet` does not try to preserve extra namespace-root identity after `exec`; it only needs the temporary privileges that exist before `exec` in the freshly created user namespace.
 
 ### Why There Is a C Shim
