@@ -198,6 +198,14 @@ Run tests:
 make test
 ```
 
+Install:
+
+```sh
+make install
+```
+
+That installs to `/usr/local/bin/nonet` when run as root, or to `$HOME/.local/bin/nonet` otherwise.
+
 Output binary:
 
 ```sh

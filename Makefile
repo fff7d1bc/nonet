@@ -26,7 +26,7 @@ export GOENV
 export GOFLAGS
 export GOTELEMETRY=off
 
-.PHONY: all build static test run clean
+.PHONY: all build static test run install clean
 
 all: build
 
@@ -48,6 +48,15 @@ $(STATIC_BIN): go.mod $(GO_SOURCES)
 
 run: build
 	"$(HOST_BIN)"
+
+install: build
+	if [ "$$(id -u)" -eq 0 ]; then \
+		mkdir -p /usr/local/bin; \
+		install -m 0755 "$(HOST_BIN)" "/usr/local/bin/$(APP)"; \
+	else \
+		mkdir -p "$$HOME/.local/bin"; \
+		install -m 0755 "$(HOST_BIN)" "$$HOME/.local/bin/$(APP)"; \
+	fi
 
 clean:
 	chmod -R u+w "$(BUILD_DIR)" 2>/dev/null || true
