@@ -21,19 +21,19 @@ This is a convenience/testing tool, not a security boundary.
 
 Run a command:
 
-```sh
+```
 nonet <command> [args...]
 ```
 
 Run a shell:
 
-```sh
+```
 nonet
 ```
 
 Stop option parsing:
 
-```sh
+```
 nonet -- --test
 ```
 
@@ -41,7 +41,7 @@ That executes a command literally named `--test`.
 
 Run the built-in runtime check:
 
-```sh
+```
 nonet --self-test
 ```
 
@@ -55,6 +55,21 @@ Inside `nonet`:
 - the loopback there is separate from the host loopback
 - binding `127.0.0.1:1234` inside `nonet` does not conflict with the host binding the same address and port
 - the final command still sees your visible UID/GID
+
+For example, on a host with several normal interfaces:
+
+```
+$ ip -br -4 a
+lo               UNKNOWN        127.0.0.1/8
+eth-br0          UP             192.168.10.55/24 192.168.10.56/24
+tailscale0       UNKNOWN        100.64.10.20/32
+br-97fe51b85c78  UP             172.19.0.1/16
+br-c60fa28dbea0  UP             172.18.0.1/16
+docker0          DOWN           172.17.0.1/16
+
+$ nonet ip -br -4 a
+lo               UNKNOWN        127.0.0.1/8
+```
 
 Supplementary groups may display oddly, similar to `unshare -c -n`. In practice this shows up in tools such as `id -G`, which report the supplementary group list via `getgroups(2)`. Across user namespaces that output can look strange or partially remapped even when actual filesystem permission checks through those groups still behave as expected. In testing, group-based access still worked despite the odd-looking `id -G` output.
 
@@ -92,7 +107,7 @@ The current design uses a simple identity map, not subordinate ID ranges.
 
 The parent writes:
 
-```text
+```
 uid_map: <uid> <uid> 1
 gid_map: <gid> <gid> 1
 ```
@@ -182,25 +197,25 @@ It may fail inside restricted containers even if it works on the host.
 
 Build:
 
-```sh
+```
 make build
 ```
 
 Static build:
 
-```sh
+```
 make static
 ```
 
 Run tests:
 
-```sh
+```
 make test
 ```
 
 Install:
 
-```sh
+```
 make install
 ```
 
@@ -208,7 +223,7 @@ That installs to `/usr/local/bin/nonet` when run as root, or to `$HOME/.local/bi
 
 Output binary:
 
-```sh
+```
 build/bin/host/nonet
 ```
 
