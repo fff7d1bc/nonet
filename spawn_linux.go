@@ -58,6 +58,8 @@ static int child_main(void *arg) {
 	struct child_state *state = (struct child_state *)arg;
 	char byte;
 
+	// Block immediately until the Go parent installs uid/gid mappings for this
+	// just-cloned child. Doing the wait here keeps the race window tiny.
 	if (read(state->sync_fd, &byte, 1) != 1) {
 		_exit(200);
 	}
@@ -90,6 +92,9 @@ static int nonet_spawn_child(char **argv, char **envp, int sync_fd, pid_t *pid_o
 	state->argv = argv;
 	state->envp = envp;
 
+	// clone(2) is used here instead of Go's higher-level process APIs because
+	// nonet needs a child that starts in CLONE_NEWUSER and then pauses before
+	// the parent writes procfs mappings.
 	pid_t pid = clone(child_main, (char *)stack + STACK_SIZE, CLONE_NEWUSER | SIGCHLD, state);
 	if (pid < 0) {
 		int err = errno;
@@ -138,6 +143,8 @@ type spawnedChild struct {
 }
 
 func spawnInUserNamespace(commandArgs, env []string, syncFD int) (*spawnedChild, error) {
+	// Keep argv/envp in C memory for the lifetime of the helper process because
+	// child_main ultimately passes them straight to execve(2).
 	cargv := make([]*C.char, 0, len(commandArgs)+1)
 	for _, arg := range commandArgs {
 		cargv = append(cargv, C.CString(arg))
@@ -210,6 +217,8 @@ func (c *spawnedChild) wait() error {
 		if code == 0 {
 			return nil
 		}
+		// The helper exits with reserved codes for setup failures so the Go side
+		// can return a readable error instead of just "exit status N".
 		if msg, ok := childExitDescription(code); ok {
 			return errors.New(msg)
 		}

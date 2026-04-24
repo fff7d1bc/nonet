@@ -68,6 +68,8 @@ func runSelfTest() error {
 func runInternalProbe(expectUID, expectGID int, expectHome string) error {
 	report := &selfTestReport{}
 
+	// This probe runs inside the isolated environment created by nonet itself,
+	// so these checks exercise the real execution path rather than a mock.
 	if expectUID >= 0 && os.Getuid() != expectUID {
 		report.fail("uid matches caller: got %d want %d", os.Getuid(), expectUID)
 	} else if expectUID >= 0 {
@@ -125,6 +127,8 @@ func runEndToEndProbe(uid, gid int, home string) error {
 	if err != nil {
 		return fmt.Errorf("resolve self executable: %w", err)
 	}
+	// Re-exec the same binary in hidden probe mode so self-test validates the
+	// same clone/map/unshare/exec flow that normal command execution uses.
 	cmd := exec.Command(self, internalProbeCommand)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("%s=%d", internalExpectUIDEnv, uid),
@@ -135,6 +139,8 @@ func runEndToEndProbe(uid, gid int, home string) error {
 }
 
 func probeLoopbackTCP() error {
+	// A listener plus an in-namespace client dial is a cheap end-to-end check
+	// that loopback is both present and actually functional, not just flagged UP.
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -171,6 +177,8 @@ func probeLoopbackTCP() error {
 }
 
 func hasDefaultRoute() (bool, error) {
+	// Parsing procfs keeps the check dependency-free; iproute2 would consult the
+	// same kernel routing data through netlink.
 	v4, err := hasDefaultRouteV4("/proc/net/route")
 	if err != nil {
 		return false, err
@@ -199,6 +207,9 @@ func hasDefaultRouteV4(path string) (bool, error) {
 		if len(fields) < 8 {
 			continue
 		}
+		// /proc/net/route stores destination and mask as hex-encoded IPv4 values
+		// in host byte order. A zero destination plus zero mask represents the
+		// default route.
 		if fields[0] != loopbackName && fields[1] == "00000000" && fields[7] == "00000000" {
 			return true, nil
 		}
@@ -222,6 +233,9 @@ func hasDefaultRouteV6(path string) (bool, error) {
 		if len(fields) < 10 {
 			continue
 		}
+		// /proc/net/ipv6_route uses 32 hex zeroes plus prefix length 00 for the
+		// default route. Ignore loopback-only entries so the check matches what
+		// "ip route show default" would treat as externally relevant routing.
 		if fields[9] != loopbackName && fields[0] == strings.Repeat("0", 32) && fields[1] == "00" {
 			return true, nil
 		}

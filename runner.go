@@ -28,6 +28,9 @@ func runWithEnv(commandArgs, env []string) error {
 	defer syncReader.Close()
 	defer syncWriter.Close()
 
+	// The child starts in a fresh user namespace and blocks on this pipe. That
+	// gives the parent a window to install uid_map/gid_map before the child
+	// continues into network namespace setup.
 	child, err := spawnInUserNamespace(resolvedArgs, env, int(syncReader.Fd()))
 	if err != nil {
 		return err
@@ -69,6 +72,8 @@ func installIdentityMappings(pid, uid, gid int) error {
 	if err := writeProcMap(fmt.Sprintf("/proc/%d/uid_map", pid), identityMapContent(uid)); err != nil {
 		return fmt.Errorf("install uid map: %w", err)
 	}
+	// Unprivileged gid_map writes require setgroups to be permanently disabled
+	// first. Older kernels may not expose this file, so ENOENT is tolerated.
 	if err := os.WriteFile(fmt.Sprintf("/proc/%d/setgroups", pid), []byte("deny\n"), 0); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("disable setgroups for gid map: %w", err)
 	}
@@ -79,6 +84,9 @@ func installIdentityMappings(pid, uid, gid int) error {
 }
 
 func identityMapContent(id int) string {
+	// The current design intentionally installs a single "identity" mapping for
+	// the calling uid/gid only. Richer multi-entry mappings would need
+	// privileged helpers such as newuidmap/newgidmap.
 	return fmt.Sprintf("%d %d 1\n", id, id)
 }
 

@@ -11,6 +11,8 @@ import (
 )
 
 const (
+	// The self-test re-execs the same binary with this hidden marker instead of
+	// exposing an internal public flag just for probe mode.
 	internalProbeCommand  = "__nonet_internal_probe__"
 	internalExpectUIDEnv  = "NONET_EXPECT_UID"
 	internalExpectGIDEnv  = "NONET_EXPECT_GID"
@@ -18,6 +20,8 @@ const (
 )
 
 func run(args []string) error {
+	// Internal probe mode is intentionally checked before normal flag parsing so
+	// the public CLI surface stays minimal.
 	if len(args) > 0 && args[0] == internalProbeCommand {
 		expectUID, err := internalIntEnv(internalExpectUIDEnv)
 		if err != nil {
@@ -86,6 +90,8 @@ func parseCLI(args []string) (cliConfig, error) {
 
 func wantsHelp(args []string) bool {
 	for _, arg := range args {
+		// Respect "--" as the standard "end of options" marker so a literal
+		// command named "-h" or "--help" is still runnable.
 		if arg == "--" {
 			return false
 		}

@@ -17,6 +17,8 @@ type ifreqFlags struct {
 }
 
 func linkFlags(name string) (uint16, error) {
+	// Query interface flags via ioctl instead of shelling out to "ip" so the
+	// self-test remains dependency-free and sees the caller's current netns.
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return 0, fmt.Errorf("open control socket: %w", err)
