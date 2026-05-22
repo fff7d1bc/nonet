@@ -207,6 +207,42 @@ Static build:
 make static
 ```
 
+### Build On SteamDeck
+
+On SteamDeck / SteamOS, the easiest way to avoid depending on host development
+packages is to build inside a Distrobox container based on Valve's Steam Runtime
+Sniper SDK:
+
+```
+distrobox create -i registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest sniper
+distrobox enter sniper
+```
+
+Inside the Distrobox, install Go from the upstream tarball. This keeps the Go
+version aligned with this repo instead of relying on older distro packages:
+
+```
+GO_VERSION=1.26.3
+curl -L "https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
+mkdir -p "$HOME/.local/opt"
+rm -rf "$HOME/.local/opt/go"
+tar -C "$HOME/.local/opt" -xzf /tmp/go.tgz
+export PATH="$HOME/.local/opt/go/bin:$PATH"
+```
+
+Then build normally from the checked-out repo:
+
+```
+cd /path/to/nonet
+make build
+```
+
+The binary is written to the same path as a normal host build:
+
+```
+build/bin/host/nonet
+```
+
 Run tests:
 
 ```
