@@ -237,10 +237,17 @@ cd /path/to/nonet
 make build
 ```
 
-The binary is written to the same path as a normal host build:
+On SteamDeck, the binary is written to:
 
 ```
-build/bin/host/nonet
+build/linux-amd64/bin/nonet
+```
+
+For cross-architecture cgo builds, provide a matching C cross-compiler. For
+example:
+
+```
+GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc make build
 ```
 
 Run tests:
@@ -260,7 +267,7 @@ That installs to `/usr/local/bin/nonet` when run as root, or to `$HOME/.local/bi
 Output binary:
 
 ```
-build/bin/host/nonet
+build/<goos>-<goarch>/bin/nonet
 ```
 
 Both normal and static builds require cgo, because the project uses the in-binary C shim for the namespace helper.
