@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +62,40 @@ func TestChildExitDescription(t *testing.T) {
 	}
 	if _, ok := childExitDescription(255); ok {
 		t.Fatal("childExitDescription(255) reported known exit code")
+	}
+}
+
+func TestSelfExePath(t *testing.T) {
+	if selfExePath != "/proc/self/exe" {
+		t.Fatalf("selfExePath = %q, want /proc/self/exe", selfExePath)
+	}
+	info, err := os.Stat(selfExePath)
+	if err != nil {
+		t.Fatalf("Stat(%q) error = %v", selfExePath, err)
+	}
+	if info.Mode()&0111 == 0 {
+		t.Fatalf("Stat(%q).Mode() = %v, want executable bits", selfExePath, info.Mode())
+	}
+}
+
+func TestSelfExePathReexecsCurrentBinary(t *testing.T) {
+	const helperEnv = "NONET_TEST_SELF_EXE_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		t.Log("self-exe helper reached")
+		return
+	}
+
+	cmd := exec.Command(selfExePath, "-test.run=^TestSelfExePathReexecsCurrentBinary$", "-test.v")
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("%s helper reexec error = %v\noutput:\n%s", selfExePath, err, out.String())
+	}
+	if !strings.Contains(out.String(), "self-exe helper reached") {
+		t.Fatalf("%s helper output = %q, want helper marker", selfExePath, out.String())
 	}
 }
 

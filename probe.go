@@ -11,6 +11,8 @@ import (
 	"syscall"
 )
 
+const selfExePath = "/proc/self/exe"
+
 type selfTestReport struct {
 	failures int
 }
@@ -123,13 +125,11 @@ func runInternalProbe(expectUID, expectGID int, expectHome string) error {
 }
 
 func runEndToEndProbe(uid, gid int, home string) error {
-	self, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve self executable: %w", err)
-	}
-	// Re-exec the same binary in hidden probe mode so self-test validates the
-	// same clone/map/unshare/exec flow that normal command execution uses.
-	cmd := exec.Command(self, internalProbeCommand)
+	// Use the procfs executable link directly so the hidden probe re-execs this
+	// process image even if the original filesystem path was replaced or
+	// unlinked. os.Executable resolves this link to a pathname, which is useful
+	// for locating resources but weaker for self re-exec.
+	cmd := exec.Command(selfExePath, internalProbeCommand)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("%s=%d", internalExpectUIDEnv, uid),
 		fmt.Sprintf("%s=%d", internalExpectGIDEnv, gid),
