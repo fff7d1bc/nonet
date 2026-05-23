@@ -171,6 +171,8 @@ func spawnInUserNamespace(commandArgs, env []string, syncFD int) (*spawnedChild,
 		return nil, fmt.Errorf("spawn helper: %w", syscall.Errno(rc))
 	}
 
+	// After a successful clone, Go owns the allocated C strings plus the child
+	// stack/state and must keep them alive until the helper has exited.
 	return &spawnedChild{
 		pid:   int(pid),
 		stack: stack,
@@ -222,6 +224,8 @@ func (c *spawnedChild) wait() error {
 		if msg, ok := childExitDescription(code); ok {
 			return errors.New(msg)
 		}
+		// Any other exit code belongs to the exec'd target command. Preserve it
+		// as this wrapper's process status instead of converting it to an error.
 		os.Exit(code)
 	}
 	return nil

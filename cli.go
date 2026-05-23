@@ -80,6 +80,8 @@ func parseCLI(args []string) (cliConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
+	// Self-test is a standalone diagnostic mode. Extra arguments would make it
+	// ambiguous whether the user expected a diagnostic or a wrapped command.
 	if cfg.selfTest && len(fs.Args()) > 0 {
 		return cfg, errors.New("--self-test does not accept a command; use -- to run a command literally")
 	}

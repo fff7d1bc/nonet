@@ -10,6 +10,8 @@ import (
 
 const loopbackName = "lo"
 
+// ifreqFlags mirrors the prefix of Linux struct ifreq used by SIOCGIFFLAGS.
+// The padding keeps the Go value large enough for the ioctl ABI.
 type ifreqFlags struct {
 	Name  [syscall.IFNAMSIZ]byte
 	Flags uint16

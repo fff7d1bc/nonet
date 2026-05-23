@@ -39,11 +39,15 @@ func runWithEnv(commandArgs, env []string) error {
 	syncReader.Close()
 
 	if err := installIdentityMappings(child.pid, uid, gid); err != nil {
+		// If mapping setup fails, the child is still blocked on the sync pipe.
+		// Kill and reap it so a paused helper is not left behind.
 		child.kill()
 		_ = child.wait()
 		return err
 	}
 	if _, err := syncWriter.Write([]byte{1}); err != nil {
+		// A failed release write leaves the child unable to make progress, so
+		// treat it the same as mapping setup failure.
 		child.kill()
 		_ = child.wait()
 		return fmt.Errorf("release helper: %w", err)
