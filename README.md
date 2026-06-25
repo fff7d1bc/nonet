@@ -195,10 +195,16 @@ It may fail inside restricted containers even if it works on the host.
 
 ## Build
 
-Build:
+Normal build:
 
 ```
 make build
+```
+
+Output binary:
+
+```
+build/<goos>-<goarch>/bin/nonet
 ```
 
 Static build:
@@ -207,47 +213,10 @@ Static build:
 make static
 ```
 
-### Build On SteamDeck
-
-On SteamDeck / SteamOS, the easiest way to avoid depending on host development
-packages is to build inside a Distrobox container based on Valve's Steam Runtime
-Sniper SDK:
+Output binary:
 
 ```
-distrobox create -i registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest sniper
-distrobox enter sniper
-```
-
-Inside the Distrobox, install Go from the upstream tarball. This keeps the Go
-version aligned with this repo instead of relying on older distro packages:
-
-```
-GO_VERSION=1.26.3
-curl -L "https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
-mkdir -p "$HOME/.local/opt"
-rm -rf "$HOME/.local/opt/go"
-tar -C "$HOME/.local/opt" -xzf /tmp/go.tgz
-export PATH="$HOME/.local/opt/go/bin:$PATH"
-```
-
-Then build normally from the checked-out repo:
-
-```
-cd /path/to/nonet
-make build
-```
-
-On SteamDeck, the binary is written to:
-
-```
-build/linux-amd64/bin/nonet
-```
-
-For cross-architecture cgo builds, provide a matching C cross-compiler. For
-example:
-
-```
-GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc make build
+build/<goos>-<goarch>/bin/nonet-static
 ```
 
 Run tests:
@@ -262,12 +231,28 @@ Install:
 make install
 ```
 
-That installs to `/usr/local/bin/nonet` when run as root, or to `$HOME/.local/bin/nonet` otherwise.
+That installs to `/usr/local/bin/nonet` when run as root, or to
+`$HOME/.local/bin/nonet` otherwise.
 
-Output binary:
+If `~/.local/bin` is not already in the session `PATH`, add it through the
+user environment:
 
 ```
-build/<goos>-<goarch>/bin/nonet
+mkdir -p ~/.config/environment.d
+printf 'PATH=%s/.local/bin:${PATH}\n' "$HOME" \
+  > ~/.config/environment.d/90-local-bin.conf
 ```
 
-Both normal and static builds require cgo, because the project uses the in-binary C shim for the namespace helper.
+Log out and back in, or reboot, so the user session sees the updated `PATH`.
+
+Run the self-test on the target host after installing:
+
+```
+nonet --self-test
+```
+
+The self-test can still fail if the target host's runtime policy blocks the
+required namespace creation.
+
+Both normal and static builds require cgo, because the project uses the
+in-binary C shim for the namespace helper.
