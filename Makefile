@@ -37,7 +37,7 @@ static: $(STATIC_BIN)
 
 test:
 	mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(GOPATH)" "$(GOTMPDIR)" "$(GOTELEMETRYDIR)"
-	go test ./...
+	go test .
 
 $(BIN): go.mod $(GO_SOURCES)
 	mkdir -p "$(BIN_DIR)" "$(GOCACHE)" "$(GOMODCACHE)" "$(GOPATH)" "$(GOTMPDIR)" "$(GOTELEMETRYDIR)"
