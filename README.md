@@ -74,6 +74,11 @@ listeners bound exactly to `127.0.0.1` and `::1`. It then binds the same ports
 inside the isolated namespace and proxies accepted TCP connections back to those
 host loopback services.
 
+When forwarding is enabled, `nonet` also lowers the isolated namespace's
+low-port bind threshold so forwarded services can keep their original ports,
+including ports below 1024. This change is local to the new network namespace
+and does not change host settings.
+
 Forwarding is intentionally narrow:
 
 - TCP only

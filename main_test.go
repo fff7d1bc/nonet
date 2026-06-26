@@ -153,6 +153,9 @@ func TestChildExitDescription(t *testing.T) {
 	if msg, ok := childExitDescription(childExitForwarderStart); !ok || msg == "" {
 		t.Fatalf("childExitDescription() = %q, %v, want non-empty message and true", msg, ok)
 	}
+	if msg, ok := childExitDescription(childExitLowPortPolicy); !ok || msg == "" {
+		t.Fatalf("childExitDescription() = %q, %v, want non-empty message and true", msg, ok)
+	}
 	if _, ok := childExitDescription(255); ok {
 		t.Fatal("childExitDescription(255) reported known exit code")
 	}

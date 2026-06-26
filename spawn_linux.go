@@ -4,6 +4,7 @@ package main
 #define _GNU_SOURCE
 #include <errno.h>
 #include <grp.h>
+#include <fcntl.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdint.h>
@@ -56,6 +57,23 @@ static int set_loopback_up(void) {
 	return 0;
 }
 
+static int allow_unprivileged_low_ports(void) {
+	int fd = open("/proc/sys/net/ipv4/ip_unprivileged_port_start", O_WRONLY | O_CLOEXEC);
+	if (fd < 0) {
+		return errno;
+	}
+
+	ssize_t written = write(fd, "0\n", 2);
+	if (written != 2) {
+		int err = errno;
+		close(fd);
+		return err != 0 ? err : EIO;
+	}
+
+	close(fd);
+	return 0;
+}
+
 static int child_main(void *arg) {
 	struct child_state *state = (struct child_state *)arg;
 	char byte;
@@ -75,6 +93,13 @@ static int child_main(void *arg) {
 		_exit(202);
 	}
 	if (state->forward_fd >= 0 && state->forward_spec != NULL && state->forward_spec[0] != '\0') {
+		// This sysctl is per-network-namespace. Lower it before execing the Go
+		// forwarder so snapshot ports below 1024 bind consistently after exec.
+		err = allow_unprivileged_low_ports();
+		if (err != 0) {
+			_exit(205);
+		}
+
 		int ready_pipe[2];
 		if (pipe(ready_pipe) != 0) {
 			_exit(204);
@@ -180,6 +205,7 @@ const (
 	childExitLoopbackUp     = 202
 	childExitExecTarget     = 203
 	childExitForwarderStart = 204
+	childExitLowPortPolicy  = 205
 )
 
 type spawnedChild struct {
@@ -305,6 +331,8 @@ func childExitDescription(code int) (string, bool) {
 		return "helper failed to exec the requested command", true
 	case childExitForwarderStart:
 		return "helper could not start TCP loopback forwarding inside the network namespace", true
+	case childExitLowPortPolicy:
+		return "helper could not allow low-port TCP forwarding inside the network namespace", true
 	default:
 		return "", false
 	}
