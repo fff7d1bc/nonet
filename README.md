@@ -255,4 +255,5 @@ The self-test can still fail if the target host's runtime policy blocks the
 required namespace creation.
 
 Both normal and static builds require cgo, because the project uses the
-in-binary C shim for the namespace helper.
+in-binary C shim for the namespace helper. Builds use Go's `netgo` resolver so
+the binary does not link glibc's `getaddrinfo` resolver path.

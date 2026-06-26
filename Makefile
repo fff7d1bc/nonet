@@ -16,6 +16,7 @@ GOTMPDIR := $(PLATFORM_BUILD_DIR)/tmp
 GOTELEMETRYDIR := $(PLATFORM_BUILD_DIR)/telemetry
 GOENV := off
 GOFLAGS := -modcacherw -buildvcs=false
+GO_TAGS := netgo
 STATIC_LDFLAGS := -linkmode external -extldflags "-static" -s -w
 
 export GOCACHE
@@ -37,15 +38,15 @@ static: $(STATIC_BIN)
 
 test:
 	mkdir -p "$(GOCACHE)" "$(GOMODCACHE)" "$(GOPATH)" "$(GOTMPDIR)" "$(GOTELEMETRYDIR)"
-	go test .
+	go test -tags '$(GO_TAGS)' .
 
 $(BIN): go.mod $(GO_SOURCES)
 	mkdir -p "$(BIN_DIR)" "$(GOCACHE)" "$(GOMODCACHE)" "$(GOPATH)" "$(GOTMPDIR)" "$(GOTELEMETRYDIR)"
-	CGO_ENABLED=1 GOOS="$(GOOS)" GOARCH="$(GOARCH)" go build -trimpath -o "$(BIN)" .
+	CGO_ENABLED=1 GOOS="$(GOOS)" GOARCH="$(GOARCH)" go build -tags '$(GO_TAGS)' -trimpath -o "$(BIN)" .
 
 $(STATIC_BIN): go.mod $(GO_SOURCES)
 	mkdir -p "$(BIN_DIR)" "$(GOCACHE)" "$(GOMODCACHE)" "$(GOPATH)" "$(GOTMPDIR)" "$(GOTELEMETRYDIR)"
-	CGO_ENABLED=1 GOOS="$(GOOS)" GOARCH="$(GOARCH)" go build -trimpath -ldflags='$(STATIC_LDFLAGS)' -o "$(STATIC_BIN)" .
+	CGO_ENABLED=1 GOOS="$(GOOS)" GOARCH="$(GOARCH)" go build -tags '$(GO_TAGS)' -trimpath -ldflags='$(STATIC_LDFLAGS)' -o "$(STATIC_BIN)" .
 
 run: build
 	"$(BIN)"
