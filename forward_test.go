@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"reflect"
+	"syscall"
 	"testing"
 )
 
@@ -60,5 +62,56 @@ func TestEncodeDecodeTCPForwardSpecs(t *testing.T) {
 func TestEncodeTCPForwardSpecsEmpty(t *testing.T) {
 	if got := encodeTCPForwardSpecs(nil); got != "" {
 		t.Fatalf("encodeTCPForwardSpecs(nil) = %q, want empty string", got)
+	}
+}
+
+func TestForwardedFDPassing(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe() error = %v", err)
+	}
+	defer readFile.Close()
+	defer writeFile.Close()
+	spec := tcpForwardSpec{family: forwardFamilyIPv4, port: 8080}
+
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("Socketpair() error = %v", err)
+	}
+	parentFD := fds[0]
+	childFD := fds[1]
+	defer syscall.Close(parentFD)
+
+	sendErr := make(chan error, 1)
+	go func() {
+		sendErr <- sendForwardedFD(childFD, spec, int(readFile.Fd()))
+		_ = syscall.Close(childFD)
+	}()
+
+	gotSpec, gotFD, err := recvForwardedFD(parentFD)
+	if err != nil {
+		t.Fatalf("recvForwardedFD() error = %v", err)
+	}
+	gotFile := os.NewFile(uintptr(gotFD), "nonet-forward-test-pipe")
+	if gotFile == nil {
+		t.Fatal("NewFile() returned nil")
+	}
+	defer gotFile.Close()
+	if err := <-sendErr; err != nil {
+		t.Fatalf("sendForwardedFD() error = %v", err)
+	}
+	if gotSpec != spec {
+		t.Fatalf("recvForwardedFD() spec = %v, want %v", gotSpec, spec)
+	}
+
+	if _, err := writeFile.Write([]byte{42}); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	var buf [1]byte
+	if _, err := gotFile.Read(buf[:]); err != nil {
+		t.Fatalf("Read() from received fd error = %v", err)
+	}
+	if buf[0] != 42 {
+		t.Fatalf("received fd read byte = %d, want 42", buf[0])
 	}
 }

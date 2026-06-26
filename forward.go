@@ -32,6 +32,12 @@ type forwardControl struct {
 	child  int
 }
 
+type forwardBridge struct {
+	listeners []*tcpListener
+	done      chan error
+	closeOnce sync.Once
+}
+
 func snapshotOpenTCPForwards() ([]tcpForwardSpec, error) {
 	specs, err := parseTCPForwardSpecs("/proc/net/tcp", forwardFamilyIPv4)
 	if err != nil {
@@ -199,8 +205,8 @@ func newForwardControl() (*forwardControl, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create forward control socket: %w", err)
 	}
-	// The child end must survive into the hidden namespace forwarder. The target
-	// command must not inherit it; the C shim closes it before the final execve.
+	// The child end must survive into the hidden namespace setup helper. The
+	// target command must not inherit it; the C shim closes it before execve.
 	syscall.CloseOnExec(fds[0])
 	return &forwardControl{parent: fds[0], child: fds[1]}, nil
 }
@@ -226,43 +232,58 @@ func (c *forwardControl) closeChild() {
 	}
 }
 
-func (c *forwardControl) startHostBridge() <-chan error {
-	done := make(chan error, 1)
-	go func() {
-		done <- hostBridgeLoop(c.parent)
-	}()
-	return done
-}
-
-func hostBridgeLoop(controlFD int) error {
-	for {
-		spec, fd, err := recvForwardedConn(controlFD)
+func (c *forwardControl) startHostBridge(specs []tcpForwardSpec) (*forwardBridge, error) {
+	listeners := make([]*tcpListener, 0, len(specs))
+	for _, want := range specs {
+		got, listener, err := recvForwardedListener(c.parent)
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, syscall.EBADF) {
-				return nil
-			}
-			return err
+			closeTCPListeners(listeners)
+			return nil, err
 		}
-		go bridgeForwardedConn(spec, fd)
+		if got != want {
+			listener.Close()
+			closeTCPListeners(listeners)
+			return nil, fmt.Errorf("received forwarded listener %s, want %s", formatForwardSpec(got), formatForwardSpec(want))
+		}
+		listeners = append(listeners, &tcpListener{spec: got, listener: listener})
 	}
+
+	bridge := &forwardBridge{
+		listeners: listeners,
+		done:      make(chan error, 1),
+	}
+	go bridge.run()
+	return bridge, nil
 }
 
-func recvForwardedConn(controlFD int) (tcpForwardSpec, int, error) {
+func recvForwardedListener(controlFD int) (tcpForwardSpec, *net.TCPListener, error) {
+	spec, fd, err := recvForwardedFD(controlFD)
+	if err != nil {
+		return tcpForwardSpec{}, nil, err
+	}
+	listener, err := tcpListenerFromFD(fd)
+	if err != nil {
+		return tcpForwardSpec{}, nil, err
+	}
+	return spec, listener, nil
+}
+
+func recvForwardedFD(controlFD int) (tcpForwardSpec, int, error) {
 	var data [3]byte
 	oob := make([]byte, syscall.CmsgSpace(4))
 	n, oobn, _, _, err := syscall.Recvmsg(controlFD, data[:], oob, 0)
 	if err != nil {
-		return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded connection: %w", err)
+		return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded fd: %w", err)
 	}
 	if n == 0 {
 		return tcpForwardSpec{}, -1, io.EOF
 	}
 	if n != len(data) {
-		return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded connection: short header")
+		return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded fd: short header")
 	}
 	messages, err := syscall.ParseSocketControlMessage(oob[:oobn])
 	if err != nil {
-		return tcpForwardSpec{}, -1, fmt.Errorf("parse forwarded connection control message: %w", err)
+		return tcpForwardSpec{}, -1, fmt.Errorf("parse forwarded fd control message: %w", err)
 	}
 	for _, message := range messages {
 		fds, err := syscall.ParseUnixRights(&message)
@@ -271,28 +292,100 @@ func recvForwardedConn(controlFD int) (tcpForwardSpec, int, error) {
 		}
 		if len(fds) > 0 {
 			port := binary.BigEndian.Uint16(data[1:3])
-			return tcpForwardSpec{family: data[0], port: port}, fds[0], nil
+			spec := tcpForwardSpec{family: data[0], port: port}
+			return spec, fds[0], nil
 		}
 	}
-	return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded connection: missing fd")
+	return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded fd: missing fd")
 }
 
-func bridgeForwardedConn(spec tcpForwardSpec, fd int) {
-	file := os.NewFile(uintptr(fd), "nonet-forwarded-tcp")
+func tcpListenerFromFD(fd int) (*net.TCPListener, error) {
+	file := os.NewFile(uintptr(fd), "nonet-forwarded-listener")
 	if file == nil {
 		_ = syscall.Close(fd)
-		return
+		return nil, errors.New("open forwarded listener fd")
 	}
-	namespaceConn, err := net.FileConn(file)
+	listener, err := net.FileListener(file)
 	_ = file.Close()
 	if err != nil {
-		return
+		return nil, fmt.Errorf("wrap forwarded listener fd: %w", err)
 	}
+	tcpListener, ok := listener.(*net.TCPListener)
+	if !ok {
+		listener.Close()
+		return nil, fmt.Errorf("forwarded listener is %T, want *net.TCPListener", listener)
+	}
+	return tcpListener, nil
+}
+
+func (b *forwardBridge) run() {
+	errCh := make(chan error, len(b.listeners))
+	var wg sync.WaitGroup
+	for _, listener := range b.listeners {
+		wg.Add(1)
+		go func(listener *tcpListener) {
+			defer wg.Done()
+			if err := acceptForwardedTCP(listener); err != nil {
+				errCh <- err
+			}
+		}(listener)
+	}
+
+	waitCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitCh)
+	}()
+
+	var err error
+	select {
+	case err = <-errCh:
+		b.close()
+		<-waitCh
+	case <-waitCh:
+	}
+	b.done <- err
+}
+
+func (b *forwardBridge) close() {
+	b.closeOnce.Do(func() {
+		closeTCPListeners(b.listeners)
+	})
+}
+
+func (b *forwardBridge) wait() error {
+	if b == nil {
+		return nil
+	}
+	return <-b.done
+}
+
+func closeTCPListeners(listeners []*tcpListener) {
+	for _, listener := range listeners {
+		listener.listener.Close()
+	}
+}
+
+func acceptForwardedTCP(listener *tcpListener) error {
+	for {
+		conn, err := listener.listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		go bridgeForwardedConn(listener.spec, conn)
+	}
+}
+
+func bridgeForwardedConn(spec tcpForwardSpec, namespaceConn net.Conn) {
 	defer namespaceConn.Close()
 
-	// The accepted socket belongs to the isolated namespace, while this Dial
-	// runs in the original host namespace. Copying between those two sockets is
-	// the intentional bridge; no host-network fd is handed to the target command.
+	// The accepted socket belongs to the isolated namespace because the listener
+	// was created there. This Dial runs in the original host namespace. Copying
+	// between those two sockets is the bridge; no host-network fd is handed to
+	// the target command.
 	hostConn, err := net.Dial(tcpNetwork(spec.family), net.JoinHostPort(loopbackHost(spec.family), strconv.Itoa(int(spec.port))))
 	if err != nil {
 		return
@@ -361,8 +454,15 @@ func runNamespaceForwarder(controlFD, readyFD int, specs []tcpForwardSpec) error
 		listeners = append(listeners, &tcpListener{spec: spec, listener: ln})
 	}
 
-	// Readiness is reported only after every listener is bound, so the C shim can
-	// exec the target without a race against early localhost connections.
+	for _, listener := range listeners {
+		if err := sendForwardedListener(controlFD, listener.spec, listener.listener); err != nil {
+			return err
+		}
+	}
+
+	// Readiness is reported only after every listener is bound and handed to the
+	// parent. The helper exits after this point, leaving no long-lived child
+	// process for launchers such as Steam/Proton to wait on.
 	ready := os.NewFile(uintptr(readyFD), "nonet-forward-ready")
 	if ready == nil {
 		return errors.New("open forward ready pipe")
@@ -372,12 +472,7 @@ func runNamespaceForwarder(controlFD, readyFD int, specs []tcpForwardSpec) error
 		return fmt.Errorf("signal forward readiness: %w", err)
 	}
 	_ = ready.Close()
-
-	errCh := make(chan error, len(listeners))
-	for _, listener := range listeners {
-		go acceptForwardedTCP(controlFD, listener, errCh)
-	}
-	return <-errCh
+	return nil
 }
 
 type tcpListener struct {
@@ -385,38 +480,24 @@ type tcpListener struct {
 	listener *net.TCPListener
 }
 
-func acceptForwardedTCP(controlFD int, listener *tcpListener, errCh chan<- error) {
-	for {
-		conn, err := listener.listener.AcceptTCP()
-		if err != nil {
-			errCh <- err
-			return
-		}
-		if err := sendForwardedConn(controlFD, listener.spec, conn); err != nil {
-			conn.Close()
-			errCh <- err
-			return
-		}
-		conn.Close()
+func sendForwardedListener(controlFD int, spec tcpForwardSpec, listener *net.TCPListener) error {
+	file, err := listener.File()
+	if err != nil {
+		return fmt.Errorf("duplicate forwarded listener fd: %w", err)
 	}
+	defer file.Close()
+
+	return sendForwardedFD(controlFD, spec, int(file.Fd()))
 }
 
-func sendForwardedConn(controlFD int, spec tcpForwardSpec, conn *net.TCPConn) error {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return err
+func sendForwardedFD(controlFD int, spec tcpForwardSpec, fd int) error {
+	var data [3]byte
+	data[0] = spec.family
+	binary.BigEndian.PutUint16(data[1:3], spec.port)
+	if err := syscall.Sendmsg(controlFD, data[:], syscall.UnixRights(fd), nil, 0); err != nil {
+		return fmt.Errorf("send forwarded fd %s: %w", formatForwardSpec(spec), err)
 	}
-	var sendErr error
-	err = raw.Control(func(fd uintptr) {
-		var data [3]byte
-		data[0] = spec.family
-		binary.BigEndian.PutUint16(data[1:3], spec.port)
-		sendErr = syscall.Sendmsg(controlFD, data[:], syscall.UnixRights(int(fd)), nil, 0)
-	})
-	if err != nil {
-		return err
-	}
-	return sendErr
+	return nil
 }
 
 func tcpNetwork(family byte) string {

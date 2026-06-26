@@ -74,6 +74,21 @@ static int allow_unprivileged_low_ports(void) {
 	return 0;
 }
 
+static int wait_for_child(pid_t pid, int *status_out) {
+	int status = 0;
+	pid_t waited;
+	do {
+		waited = waitpid(pid, &status, 0);
+	} while (waited < 0 && errno == EINTR);
+	if (waited < 0) {
+		return errno;
+	}
+	if (status_out != NULL) {
+		*status_out = status;
+	}
+	return 0;
+}
+
 static int child_main(void *arg) {
 	struct child_state *state = (struct child_state *)arg;
 	char byte;
@@ -93,8 +108,8 @@ static int child_main(void *arg) {
 		_exit(202);
 	}
 	if (state->forward_fd >= 0 && state->forward_spec != NULL && state->forward_spec[0] != '\0') {
-		// This sysctl is per-network-namespace. Lower it before execing the Go
-		// forwarder so snapshot ports below 1024 bind consistently after exec.
+		// This sysctl is per-network-namespace. Lower it before binding
+		// forwarded listeners so snapshot ports below 1024 work consistently.
 		err = allow_unprivileged_low_ports();
 		if (err != 0) {
 			_exit(205);
@@ -105,8 +120,9 @@ static int child_main(void *arg) {
 			_exit(204);
 		}
 
-		// The forwarder must run in the just-created network namespace, while
-		// this original child must remain available to exec the target command.
+		// The setup helper must run in the just-created network namespace so it
+		// can bind listener sockets there. It passes those listener fds back to
+		// the parent and exits before the target command starts.
 		pid_t forwarder = fork();
 		if (forwarder < 0) {
 			close(ready_pipe[0]);
@@ -133,13 +149,23 @@ static int child_main(void *arg) {
 		}
 
 		close(ready_pipe[1]);
-		// Do not exec the target until the hidden forwarder has bound all
-		// requested loopback ports, otherwise early localhost connects can race.
+		// Do not exec the target until all requested loopback ports have been
+		// bound and handed to the parent, otherwise early localhost connects can
+		// race. Reap the setup helper before exec so launchers that wait for the
+		// target's process tree do not see a long-lived internal nonet process.
 		if (read(ready_pipe[0], &byte, 1) != 1) {
 			close(ready_pipe[0]);
+			wait_for_child(forwarder, NULL);
 			_exit(204);
 		}
 		close(ready_pipe[0]);
+		int forwarder_status = 0;
+		if (wait_for_child(forwarder, &forwarder_status) != 0) {
+			_exit(204);
+		}
+		if (!WIFEXITED(forwarder_status) || WEXITSTATUS(forwarder_status) != 0) {
+			_exit(204);
+		}
 		close(state->forward_fd);
 	}
 	execve(state->argv[0], state->argv, state->envp);
@@ -330,7 +356,7 @@ func childExitDescription(code int) (string, bool) {
 	case childExitExecTarget:
 		return "helper failed to exec the requested command", true
 	case childExitForwarderStart:
-		return "helper could not start TCP loopback forwarding inside the network namespace", true
+		return "helper could not set up TCP loopback forwarding inside the network namespace", true
 	case childExitLowPortPolicy:
 		return "helper could not allow low-port TCP forwarding inside the network namespace", true
 	default:

@@ -33,6 +33,7 @@ func runWithEnv(cfg runConfig, env []string) error {
 	cfg.debugf("caller identity: uid=%d gid=%d", uid, gid)
 
 	forwardSpec := ""
+	var forwardSpecs []tcpForwardSpec
 	var forwardControl *forwardControl
 	if cfg.forwardOpenTCP {
 		cfg.debugf("TCP loopback forwarding: enabled")
@@ -42,6 +43,7 @@ func runWithEnv(cfg runConfig, env []string) error {
 			return err
 		}
 		cfg.debugf("TCP loopback forwarding snapshot: %s", formatTCPForwardSpecs(specs))
+		forwardSpecs = specs
 		forwardSpec = encodeTCPForwardSpecs(specs)
 		if forwardSpec != "" {
 			forwardControl, err = newForwardControl()
@@ -109,9 +111,17 @@ func runWithEnv(cfg runConfig, env []string) error {
 	syncWriter.Close()
 	cfg.debugf("released helper")
 
-	var bridgeDone <-chan error
+	var bridge *forwardBridge
 	if forwardControl != nil {
-		bridgeDone = forwardControl.startHostBridge()
+		cfg.debugf("waiting for forwarding listener handoff")
+		bridge, err = forwardControl.startHostBridge(forwardSpecs)
+		forwardControl.closeParent()
+		if err != nil {
+			child.kill()
+			_ = child.wait()
+			cfg.debugf("TCP loopback forwarding setup failed: %v", err)
+			return fmt.Errorf("set up TCP loopback forwarding: %w", err)
+		}
 		cfg.debugf("started host forwarding bridge")
 	}
 
@@ -121,10 +131,16 @@ func runWithEnv(cfg runConfig, env []string) error {
 	} else {
 		cfg.debugf("wrapped command finished successfully")
 	}
-	if forwardControl != nil {
-		forwardControl.closeParent()
-		if bridgeErr := <-bridgeDone; err == nil && bridgeErr != nil {
+	if bridge != nil {
+		cfg.debugf("closing host forwarding bridge")
+		bridge.close()
+		bridgeErr := bridge.wait()
+		if bridgeErr != nil {
 			cfg.debugf("host forwarding bridge finished with error: %v", bridgeErr)
+		} else {
+			cfg.debugf("host forwarding bridge stopped")
+		}
+		if err == nil && bridgeErr != nil {
 			err = bridgeErr
 		}
 	}

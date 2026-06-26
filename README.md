@@ -133,9 +133,11 @@ The basic sequence is:
 8. The child calls `unshare(CLONE_NEWNET)`.
 9. The child brings `lo` up using `ioctl(SIOCGIFFLAGS)` and `ioctl(SIOCSIFFLAGS)` on a datagram socket.
 10. If TCP forwarding is enabled and matching listeners were found, the child
-    starts a hidden in-namespace forwarder and waits until it has bound the
-    forwarded loopback ports.
-11. The child `execve()`s the resolved command path.
+    starts a short-lived in-namespace setup helper. That helper binds the
+    forwarded loopback ports, hands the listener sockets to the parent, and
+    exits before the final command starts.
+11. The parent starts the long-running proxy loops for those listener sockets.
+12. The child `execve()`s the resolved command path.
 
 The important detail is loopback setup, and optional forwarded-port binding,
 happen before the final `exec`.
@@ -143,6 +145,22 @@ happen before the final `exec`.
 Here, `<child-pid>` means the PID of the just-cloned helper as seen by the parent in the parent namespace. The parent writes those procfs files from outside the child before releasing it to continue.
 
 That is why this works while plain `unshare -c -n <cmd>` does not: the helper still has capabilities in the fresh user namespace at that point, so it can create the new network namespace and configure loopback before handing control to the final command.
+
+### TCP Loopback Forwarding Model
+
+`-F` does not put the final command in the host network namespace, and it does
+not directly share the host loopback interface. The command still has its own
+network namespace with its own `lo`.
+
+The forwarded listener sockets are created while the short-lived setup helper is
+inside the isolated network namespace. Those sockets stay attached to that
+namespace even after their file descriptors are passed back to the parent
+`nonet` process.
+
+The parent remains in the host network namespace. It accepts connections on the
+isolated-namespace listener FDs, opens separate connections to the matching host
+loopback services, and copies bytes between the two sockets. This exposes only
+the snapshotted loopback TCP ports, not the host network namespace as a whole.
 
 ### Identity Model
 
