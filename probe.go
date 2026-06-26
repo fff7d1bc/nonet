@@ -139,7 +139,7 @@ func runEndToEndProbe(uid, gid int, home string) error {
 	// process image even if the original filesystem path was replaced or
 	// unlinked. os.Executable resolves this link to a pathname, which is useful
 	// for locating resources but weaker for self re-exec.
-	cmd := exec.Command(selfExePath, internalProbeCommand)
+	cmd := exec.Command(selfExePath, internalFlag, internalProbeMode)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("%s=%d", internalExpectUIDEnv, uid),
 		fmt.Sprintf("%s=%d", internalExpectGIDEnv, gid),
@@ -160,7 +160,7 @@ func runForwardingProbe(uid, gid int, home string) error {
 		return errors.New("no forwarding probe listeners available")
 	}
 
-	cmd := exec.Command(selfExePath, internalProbeCommand)
+	cmd := exec.Command(selfExePath, internalFlag, internalProbeMode)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("%s=%d", internalExpectUIDEnv, uid),
 		fmt.Sprintf("%s=%d", internalExpectGIDEnv, gid),

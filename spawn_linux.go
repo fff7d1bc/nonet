@@ -95,7 +95,8 @@ static int child_main(void *arg) {
 			snprintf(ready_fd, sizeof(ready_fd), "%d", ready_pipe[1]);
 			char *forward_argv[] = {
 				"/proc/self/exe",
-				"__nonet_internal_forwarder__",
+				"--internal",
+				"forwarder",
 				control_fd,
 				ready_fd,
 				state->forward_spec,

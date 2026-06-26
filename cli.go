@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	// The self-test re-execs the same binary with this hidden marker instead of
-	// exposing an internal public flag just for probe mode.
-	internalProbeCommand   = "__nonet_internal_probe__"
-	internalForwardCommand = "__nonet_internal_forwarder__"
+	// Internal modes are intentionally hidden from help and README usage docs;
+	// they are argv contracts between nonet processes, not public CLI.
+	internalFlag           = "--internal"
+	internalProbeMode      = "probe"
+	internalForwarderMode  = "forwarder"
 	internalExpectUIDEnv   = "NONET_EXPECT_UID"
 	internalExpectGIDEnv   = "NONET_EXPECT_GID"
 	internalExpectHomeEnv  = "NONET_EXPECT_HOME"
@@ -22,21 +23,24 @@ const (
 )
 
 func run(args []string) error {
-	// Internal probe mode is intentionally checked before normal flag parsing so
-	// the public CLI surface stays minimal.
-	if len(args) > 0 && args[0] == internalProbeCommand {
-		expectUID, err := internalIntEnv(internalExpectUIDEnv)
+	// Internal dispatch is checked before normal flag parsing so the hidden
+	// re-exec modes do not become part of the public flag surface.
+	if len(args) > 0 && args[0] == internalFlag {
+		mode, rest, err := parseInternalArgs(args)
 		if err != nil {
 			return err
 		}
-		expectGID, err := internalIntEnv(internalExpectGIDEnv)
-		if err != nil {
-			return err
+		switch mode {
+		case internalProbeMode:
+			if len(rest) != 0 {
+				return fmt.Errorf("%s %s does not accept arguments", internalFlag, mode)
+			}
+			return runInternalProbeFromEnv()
+		case internalForwarderMode:
+			return runInternalForwarder(rest)
+		default:
+			return fmt.Errorf("unknown internal mode %q", mode)
 		}
-		return runInternalProbe(expectUID, expectGID, os.Getenv(internalExpectHomeEnv))
-	}
-	if len(args) > 0 && args[0] == internalForwardCommand {
-		return runInternalForwarder(args[1:])
 	}
 
 	cfg, err := parseCLI(args)
@@ -55,6 +59,25 @@ func run(args []string) error {
 			forwardOpenTCP: cfg.forwardOpenTCP,
 		})
 	}
+}
+
+func parseInternalArgs(args []string) (string, []string, error) {
+	if len(args) < 2 {
+		return "", nil, fmt.Errorf("%s requires a mode", internalFlag)
+	}
+	return args[1], args[2:], nil
+}
+
+func runInternalProbeFromEnv() error {
+	expectUID, err := internalIntEnv(internalExpectUIDEnv)
+	if err != nil {
+		return err
+	}
+	expectGID, err := internalIntEnv(internalExpectGIDEnv)
+	if err != nil {
+		return err
+	}
+	return runInternalProbe(expectUID, expectGID, os.Getenv(internalExpectHomeEnv))
 }
 
 type cliConfig struct {

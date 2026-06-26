@@ -326,7 +326,7 @@ func closeWrite(conn net.Conn) {
 
 func runInternalForwarder(args []string) error {
 	if len(args) != 3 {
-		return fmt.Errorf("%s expects control fd, ready fd, and specs", internalForwardCommand)
+		return fmt.Errorf("%s %s expects control fd, ready fd, and specs", internalFlag, internalForwarderMode)
 	}
 	controlFD, err := strconv.Atoi(args[0])
 	if err != nil {

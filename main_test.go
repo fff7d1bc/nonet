@@ -68,6 +68,66 @@ func TestParseCLIRejectsForwardWithSelfTest(t *testing.T) {
 	}
 }
 
+func TestParseInternalArgs(t *testing.T) {
+	mode, rest, err := parseInternalArgs([]string{internalFlag, internalProbeMode})
+	if err != nil {
+		t.Fatalf("parseInternalArgs() probe error = %v", err)
+	}
+	if mode != internalProbeMode {
+		t.Fatalf("parseInternalArgs() probe mode = %q, want %q", mode, internalProbeMode)
+	}
+	if len(rest) != 0 {
+		t.Fatalf("parseInternalArgs() probe rest = %v, want empty", rest)
+	}
+
+	mode, rest, err = parseInternalArgs([]string{internalFlag, internalForwarderMode, "3", "4", "4:8080"})
+	if err != nil {
+		t.Fatalf("parseInternalArgs() forwarder error = %v", err)
+	}
+	if mode != internalForwarderMode {
+		t.Fatalf("parseInternalArgs() forwarder mode = %q, want %q", mode, internalForwarderMode)
+	}
+	if !reflect.DeepEqual(rest, []string{"3", "4", "4:8080"}) {
+		t.Fatalf("parseInternalArgs() forwarder rest = %v, want [3 4 4:8080]", rest)
+	}
+}
+
+func TestParseInternalArgsRejectsMissingMode(t *testing.T) {
+	_, _, err := parseInternalArgs([]string{"--internal"})
+	if err == nil {
+		t.Fatal("parseInternalArgs() error = nil, want error")
+	}
+}
+
+func TestRunRejectsUnknownInternalMode(t *testing.T) {
+	if err := run([]string{"--internal", "unknown"}); err == nil {
+		t.Fatal("run() error = nil, want error")
+	}
+}
+
+func TestParseCLIDoesNotTreatCommandAfterDashDashAsInternal(t *testing.T) {
+	cfg, err := parseCLI([]string{"--", "--internal"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if !reflect.DeepEqual(cfg.command, []string{"--internal"}) {
+		t.Fatalf("parseCLI().command = %v, want [--internal]", cfg.command)
+	}
+}
+
+func TestParseCLIDoesNotTreatHelpAfterDashDashAsHelp(t *testing.T) {
+	cfg, err := parseCLI([]string{"--", "--help"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if cfg.showHelp {
+		t.Fatal("parseCLI().showHelp = true, want false")
+	}
+	if !reflect.DeepEqual(cfg.command, []string{"--help"}) {
+		t.Fatalf("parseCLI().command = %v, want [--help]", cfg.command)
+	}
+}
+
 func TestOnlyLoopback(t *testing.T) {
 	if !onlyLoopback([]string{"lo"}) {
 		t.Fatal("onlyLoopback([lo]) = false, want true")
