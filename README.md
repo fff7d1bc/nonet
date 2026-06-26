@@ -39,6 +39,12 @@ Run a shell:
 nonet
 ```
 
+Print setup diagnostics while running a command:
+
+```
+nonet --debug <command> [args...]
+```
+
 Stop option parsing:
 
 ```
@@ -182,6 +188,16 @@ So the tradeoff chosen by this project is:
 - keep the namespace-critical process creation step in a tiny C shim
 - avoid external helper binaries
 - accept that builds require cgo
+
+## Debug Output
+
+`nonet --debug <command>` prints setup diagnostics to stderr while running the
+real command. It logs command resolution, UID/GID mapping, helper release, TCP
+forwarding setup, and command completion.
+
+Debug output is meant for troubleshooting. It is human-readable text, not a
+stable machine-readable API. Use `nonet --self-test` for the built-in runtime
+probe instead.
 
 ## Self-Test
 

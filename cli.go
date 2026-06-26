@@ -57,6 +57,7 @@ func run(args []string) error {
 		return runParent(runConfig{
 			command:        cfg.command,
 			forwardOpenTCP: cfg.forwardOpenTCP,
+			debug:          cfg.debug,
 		})
 	}
 }
@@ -85,6 +86,7 @@ type cliConfig struct {
 	selfTest       bool
 	showHelp       bool
 	forwardOpenTCP bool
+	debug          bool
 }
 
 func parseCLI(args []string) (cliConfig, error) {
@@ -95,6 +97,7 @@ func parseCLI(args []string) (cliConfig, error) {
 	fs.BoolVar(&cfg.selfTest, "self-test", false, "validate runtime prerequisites and perform an end-to-end probe")
 	fs.BoolVar(&cfg.forwardOpenTCP, "forward-open-tcp", false, "forward host TCP listeners bound to 127.0.0.1 and ::1")
 	fs.BoolVar(&cfg.forwardOpenTCP, "F", false, "alias for --forward-open-tcp")
+	fs.BoolVar(&cfg.debug, "debug", false, "print setup diagnostics to stderr")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s [options] [--] [command [args...]]\n", filepath.Base(os.Args[0]))
 		fmt.Fprintln(fs.Output(), "Run a command in a fresh network namespace with loopback enabled.")
@@ -102,6 +105,7 @@ func parseCLI(args []string) (cliConfig, error) {
 		fmt.Fprintln(fs.Output(), "Options:")
 		fmt.Fprintln(fs.Output(), "  -F, --forward-open-tcp")
 		fmt.Fprintln(fs.Output(), "                 Forward current host TCP listeners on 127.0.0.1 and ::1")
+		fmt.Fprintln(fs.Output(), "  --debug        Print setup diagnostics to stderr")
 		fmt.Fprintln(fs.Output(), "  --self-test    Validate runtime support and perform an end-to-end probe")
 		fmt.Fprintln(fs.Output(), "  -h, --help     Show this help")
 		fmt.Fprintln(fs.Output(), "")
@@ -123,6 +127,9 @@ func parseCLI(args []string) (cliConfig, error) {
 	}
 	if cfg.selfTest && cfg.forwardOpenTCP {
 		return cfg, errors.New("--self-test cannot be combined with --forward-open-tcp")
+	}
+	if cfg.selfTest && cfg.debug {
+		return cfg, errors.New("--self-test cannot be combined with --debug")
 	}
 
 	cfg.command = commandOrShell(fs.Args())

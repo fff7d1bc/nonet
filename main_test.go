@@ -68,6 +68,42 @@ func TestParseCLIRejectsForwardWithSelfTest(t *testing.T) {
 	}
 }
 
+func TestParseCLIDebug(t *testing.T) {
+	cfg, err := parseCLI([]string{"--debug", "echo"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if !cfg.debug {
+		t.Fatal("parseCLI().debug = false, want true")
+	}
+	if !reflect.DeepEqual(cfg.command, []string{"echo"}) {
+		t.Fatalf("parseCLI().command = %v, want [echo]", cfg.command)
+	}
+}
+
+func TestParseCLIDebugWithForwardOpenTCP(t *testing.T) {
+	cfg, err := parseCLI([]string{"--debug", "-F", "--", "echo"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if !cfg.debug {
+		t.Fatal("parseCLI().debug = false, want true")
+	}
+	if !cfg.forwardOpenTCP {
+		t.Fatal("parseCLI().forwardOpenTCP = false, want true")
+	}
+	if !reflect.DeepEqual(cfg.command, []string{"echo"}) {
+		t.Fatalf("parseCLI().command = %v, want [echo]", cfg.command)
+	}
+}
+
+func TestParseCLIRejectsDebugWithSelfTest(t *testing.T) {
+	_, err := parseCLI([]string{"--self-test", "--debug"})
+	if err == nil {
+		t.Fatal("parseCLI() error = nil, want error")
+	}
+}
+
 func TestParseInternalArgs(t *testing.T) {
 	mode, rest, err := parseInternalArgs([]string{internalFlag, internalProbeMode})
 	if err != nil {

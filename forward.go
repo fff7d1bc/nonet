@@ -444,6 +444,17 @@ func formatForwardSpec(spec tcpForwardSpec) string {
 	return net.JoinHostPort(loopbackHost(spec.family), strconv.Itoa(int(spec.port)))
 }
 
+func formatTCPForwardSpecs(specs []tcpForwardSpec) string {
+	if len(specs) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		parts = append(parts, formatForwardSpec(spec))
+	}
+	return strings.Join(parts, ", ")
+}
+
 func setParentDeathSignal() error {
 	_, _, errno := syscall.Syscall(syscall.SYS_PRCTL, syscall.PR_SET_PDEATHSIG, uintptr(syscall.SIGTERM), 0)
 	if errno != 0 {
