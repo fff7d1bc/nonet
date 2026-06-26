@@ -59,6 +59,11 @@ func runSelfTest() error {
 	} else {
 		report.pass("end-to-end probe completed")
 	}
+	if err := runForwardingProbe(uid, gid, home); err != nil {
+		report.fail("TCP loopback forwarding probe: %v", err)
+	} else {
+		report.pass("TCP loopback forwarding probe completed")
+	}
 
 	if err := report.err(); err != nil {
 		return err
@@ -120,6 +125,11 @@ func runInternalProbe(expectUID, expectGID int, expectHome string) error {
 	} else {
 		report.pass("loopback TCP probe succeeded")
 	}
+	if err := probeForwardedTCP(os.Getenv(internalForwardTestEnv)); err != nil {
+		report.fail("forwarded TCP probe: %v", err)
+	} else if os.Getenv(internalForwardTestEnv) != "" {
+		report.pass("forwarded TCP probe succeeded")
+	}
 
 	return report.err()
 }
@@ -135,7 +145,91 @@ func runEndToEndProbe(uid, gid int, home string) error {
 		fmt.Sprintf("%s=%d", internalExpectGIDEnv, gid),
 		fmt.Sprintf("%s=%s", internalExpectHomeEnv, home),
 	)
-	return runWithEnv(cmd.Args, cmd.Env)
+	return runWithEnv(runConfig{command: cmd.Args}, cmd.Env)
+}
+
+func runForwardingProbe(uid, gid int, home string) error {
+	listeners, addrs, err := startForwardingProbeListeners()
+	if err != nil {
+		return err
+	}
+	for _, ln := range listeners {
+		defer ln.Close()
+	}
+	if len(addrs) == 0 {
+		return errors.New("no forwarding probe listeners available")
+	}
+
+	cmd := exec.Command(selfExePath, internalProbeCommand)
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("%s=%d", internalExpectUIDEnv, uid),
+		fmt.Sprintf("%s=%d", internalExpectGIDEnv, gid),
+		fmt.Sprintf("%s=%s", internalExpectHomeEnv, home),
+		fmt.Sprintf("%s=%s", internalForwardTestEnv, strings.Join(addrs, ",")),
+	)
+	return runWithEnv(runConfig{command: cmd.Args, forwardOpenTCP: true}, cmd.Env)
+}
+
+func startForwardingProbeListeners() ([]net.Listener, []string, error) {
+	var listeners []net.Listener
+	var addrs []string
+
+	v4, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return nil, nil, err
+	}
+	listeners = append(listeners, v4)
+	addrs = append(addrs, v4.Addr().String())
+	serveForwardingProbe(v4)
+
+	if v6, err := net.Listen("tcp6", "[::1]:0"); err == nil {
+		listeners = append(listeners, v6)
+		addrs = append(addrs, v6.Addr().String())
+		serveForwardingProbe(v6)
+	}
+
+	return listeners, addrs, nil
+}
+
+func serveForwardingProbe(ln net.Listener) {
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				var buf [1]byte
+				if _, err := conn.Read(buf[:]); err == nil {
+					_, _ = conn.Write(buf[:])
+				}
+			}()
+		}
+	}()
+}
+
+func probeForwardedTCP(addrs string) error {
+	if strings.TrimSpace(addrs) == "" {
+		return nil
+	}
+	for _, addr := range strings.Split(addrs, ",") {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("dial %s: %w", addr, err)
+		}
+		if _, err := conn.Write([]byte{1}); err != nil {
+			conn.Close()
+			return fmt.Errorf("write %s: %w", addr, err)
+		}
+		var buf [1]byte
+		if _, err := conn.Read(buf[:]); err != nil {
+			conn.Close()
+			return fmt.Errorf("read %s: %w", addr, err)
+		}
+		conn.Close()
+	}
+	return nil
 }
 
 func probeLoopbackTCP() error {

@@ -8,18 +8,40 @@ import (
 	"strings"
 )
 
-func runParent(commandArgs []string) error {
-	return runWithEnv(commandArgs, os.Environ())
+type runConfig struct {
+	command        []string
+	forwardOpenTCP bool
 }
 
-func runWithEnv(commandArgs, env []string) error {
-	resolvedArgs, err := resolveCommand(commandArgs)
+func runParent(cfg runConfig) error {
+	return runWithEnv(cfg, os.Environ())
+}
+
+func runWithEnv(cfg runConfig, env []string) error {
+	resolvedArgs, err := resolveCommand(cfg.command)
 	if err != nil {
 		return err
 	}
 
 	uid := os.Getuid()
 	gid := os.Getgid()
+
+	forwardSpec := ""
+	var forwardControl *forwardControl
+	if cfg.forwardOpenTCP {
+		specs, err := snapshotOpenTCPForwards()
+		if err != nil {
+			return err
+		}
+		forwardSpec = encodeTCPForwardSpecs(specs)
+		if forwardSpec != "" {
+			forwardControl, err = newForwardControl()
+			if err != nil {
+				return err
+			}
+			defer forwardControl.closeParent()
+		}
+	}
 
 	syncReader, syncWriter, err := os.Pipe()
 	if err != nil {
@@ -31,12 +53,22 @@ func runWithEnv(commandArgs, env []string) error {
 	// The child starts in a fresh user namespace and blocks on this pipe. That
 	// gives the parent a window to install uid_map/gid_map before the child
 	// continues into network namespace setup.
-	child, err := spawnInUserNamespace(resolvedArgs, env, int(syncReader.Fd()))
+	forwardFD := -1
+	if forwardControl != nil {
+		forwardFD = forwardControl.childFD()
+	}
+	child, err := spawnInUserNamespace(resolvedArgs, env, int(syncReader.Fd()), forwardFD, forwardSpec)
 	if err != nil {
+		if forwardControl != nil {
+			forwardControl.closeChild()
+		}
 		return err
 	}
 	defer child.close()
 	syncReader.Close()
+	if forwardControl != nil {
+		forwardControl.closeChild()
+	}
 
 	if err := installIdentityMappings(child.pid, uid, gid); err != nil {
 		// If mapping setup fails, the child is still blocked on the sync pipe.
@@ -54,7 +86,19 @@ func runWithEnv(commandArgs, env []string) error {
 	}
 	syncWriter.Close()
 
-	return child.wait()
+	var bridgeDone <-chan error
+	if forwardControl != nil {
+		bridgeDone = forwardControl.startHostBridge()
+	}
+
+	err = child.wait()
+	if forwardControl != nil {
+		forwardControl.closeParent()
+		if bridgeErr := <-bridgeDone; err == nil && bridgeErr != nil {
+			err = bridgeErr
+		}
+	}
+	return err
 }
 
 func resolveCommand(commandArgs []string) ([]string, error) {

@@ -25,6 +25,14 @@ Run a command:
 nonet <command> [args...]
 ```
 
+Run a command while forwarding host TCP services that are already listening on
+`127.0.0.1` or `::1`:
+
+```
+nonet -F <command> [args...]
+nonet --forward-open-tcp <command> [args...]
+```
+
 Run a shell:
 
 ```
@@ -55,6 +63,26 @@ Inside `nonet`:
 - the loopback there is separate from the host loopback
 - binding `127.0.0.1:1234` inside `nonet` does not conflict with the host binding the same address and port
 - the final command still sees your visible UID/GID
+
+Sometimes the right behavior is a fully private loopback. Other times, the
+command should still be cut off from the outside network but needs to call an
+already-running local service on the host, such as a desktop session API, a
+local credential helper, or a test service.
+
+With `-F` / `--forward-open-tcp`, `nonet` takes a startup snapshot of host TCP
+listeners bound exactly to `127.0.0.1` and `::1`. It then binds the same ports
+inside the isolated namespace and proxies accepted TCP connections back to those
+host loopback services.
+
+Forwarding is intentionally narrow:
+
+- TCP only
+- exact `127.0.0.1` and `::1` only
+- no UDP
+- no `0.0.0.0` or `::` wildcard listeners
+- no services that start after `nonet` starts
+
+If no matching listeners exist, `-F` is a no-op and the command still runs.
 
 For example, on a host with several normal interfaces:
 
@@ -93,9 +121,13 @@ The basic sequence is:
 7. The parent releases the child by writing one byte to the pipe.
 8. The child calls `unshare(CLONE_NEWNET)`.
 9. The child brings `lo` up using `ioctl(SIOCGIFFLAGS)` and `ioctl(SIOCSIFFLAGS)` on a datagram socket.
-10. The child `execve()`s the resolved command path.
+10. If TCP forwarding is enabled and matching listeners were found, the child
+    starts a hidden in-namespace forwarder and waits until it has bound the
+    forwarded loopback ports.
+11. The child `execve()`s the resolved command path.
 
-The important detail is step 9 happens before the final `exec`.
+The important detail is loopback setup, and optional forwarded-port binding,
+happen before the final `exec`.
 
 Here, `<child-pid>` means the PID of the just-cloned helper as seen by the parent in the parent namespace. The parent writes those procfs files from outside the child before releasing it to continue.
 
@@ -159,6 +191,7 @@ It checks:
 - that only `lo` is present in the namespace
 - that `lo` is up
 - TCP loopback connectivity on `127.0.0.1`
+- optional TCP loopback forwarding with temporary host listeners
 - access to the caller's home directory
 
 If this passes, the host is a good candidate for `nonet`.
@@ -173,12 +206,15 @@ It prevents normal network access by running the command in a separate network n
 - Unix sockets
 - inherited file descriptors
 - other local IPC mechanisms
+- host loopback TCP services explicitly forwarded with `-F` / `--forward-open-tcp`
 
 So it is appropriate for things like:
 
 - testing builds without outside network access
 - checking whether a process unexpectedly reaches out to the network
 - running one command with isolated loopback
+- running one command without outside network access while allowing specific
+  already-running host loopback TCP services through `-F`
 
 It should not be treated as a hardened security container.
 

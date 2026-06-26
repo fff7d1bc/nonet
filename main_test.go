@@ -38,6 +38,36 @@ func TestParseCLIRejectsCommandWithSelfTest(t *testing.T) {
 	}
 }
 
+func TestParseCLIForwardOpenTCP(t *testing.T) {
+	cfg, err := parseCLI([]string{"--forward-open-tcp", "--", "echo"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if !cfg.forwardOpenTCP {
+		t.Fatal("parseCLI().forwardOpenTCP = false, want true")
+	}
+	if !reflect.DeepEqual(cfg.command, []string{"echo"}) {
+		t.Fatalf("parseCLI().command = %v, want [echo]", cfg.command)
+	}
+}
+
+func TestParseCLIForwardOpenTCPAlias(t *testing.T) {
+	cfg, err := parseCLI([]string{"-F", "echo"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if !cfg.forwardOpenTCP {
+		t.Fatal("parseCLI().forwardOpenTCP = false, want true")
+	}
+}
+
+func TestParseCLIRejectsForwardWithSelfTest(t *testing.T) {
+	_, err := parseCLI([]string{"--self-test", "-F"})
+	if err == nil {
+		t.Fatal("parseCLI() error = nil, want error")
+	}
+}
+
 func TestOnlyLoopback(t *testing.T) {
 	if !onlyLoopback([]string{"lo"}) {
 		t.Fatal("onlyLoopback([lo]) = false, want true")
@@ -58,6 +88,9 @@ func TestIdentityMapContent(t *testing.T) {
 
 func TestChildExitDescription(t *testing.T) {
 	if msg, ok := childExitDescription(childExitUnshareNet); !ok || msg == "" {
+		t.Fatalf("childExitDescription() = %q, %v, want non-empty message and true", msg, ok)
+	}
+	if msg, ok := childExitDescription(childExitForwarderStart); !ok || msg == "" {
 		t.Fatalf("childExitDescription() = %q, %v, want non-empty message and true", msg, ok)
 	}
 	if _, ok := childExitDescription(255); ok {
