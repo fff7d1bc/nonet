@@ -21,6 +21,12 @@ func (r *selfTestReport) pass(format string, args ...any) {
 	fmt.Printf("[✓] "+format+"\n", args...)
 }
 
+func (r *selfTestReport) passShared(show bool, format string, args ...any) {
+	if show {
+		r.pass(format, args...)
+	}
+}
+
 func (r *selfTestReport) fail(format string, args ...any) {
 	r.failures++
 	fmt.Printf("[x] "+format+"\n", args...)
@@ -74,24 +80,26 @@ func runSelfTest() error {
 
 func runInternalProbe(expectUID, expectGID int, expectHome string) error {
 	report := &selfTestReport{}
+	forwardTestAddrs := os.Getenv(internalForwardTestEnv)
+	showSharedPasses := showSharedProbePasses(forwardTestAddrs)
 
 	// This probe runs inside the isolated environment created by nonet itself,
 	// so these checks exercise the real execution path rather than a mock.
 	if expectUID >= 0 && os.Getuid() != expectUID {
 		report.fail("uid matches caller: got %d want %d", os.Getuid(), expectUID)
 	} else if expectUID >= 0 {
-		report.pass("uid matches caller: %d", os.Getuid())
+		report.passShared(showSharedPasses, "uid matches caller: %d", os.Getuid())
 	}
 	if expectGID >= 0 && os.Getgid() != expectGID {
 		report.fail("gid matches caller: got %d want %d", os.Getgid(), expectGID)
 	} else if expectGID >= 0 {
-		report.pass("gid matches caller: %d", os.Getgid())
+		report.passShared(showSharedPasses, "gid matches caller: %d", os.Getgid())
 	}
 	if expectHome != "" {
 		if _, err := os.ReadDir(expectHome); err != nil {
 			report.fail("home access check for %s: %v", expectHome, err)
 		} else {
-			report.pass("home access check: %s", expectHome)
+			report.passShared(showSharedPasses, "home access check: %s", expectHome)
 		}
 	}
 
@@ -101,7 +109,7 @@ func runInternalProbe(expectUID, expectGID int, expectHome string) error {
 	} else if !onlyLoopback(names) {
 		report.fail("only loopback interface is present: %s", formatInterfaceList(names))
 	} else {
-		report.pass("only loopback interface is present: %s", formatInterfaceList(names))
+		report.passShared(showSharedPasses, "only loopback interface is present: %s", formatInterfaceList(names))
 	}
 	hasDefaultRoute, err := hasDefaultRoute()
 	if err != nil {
@@ -109,7 +117,7 @@ func runInternalProbe(expectUID, expectGID int, expectHome string) error {
 	} else if hasDefaultRoute {
 		report.fail("default route is absent")
 	} else {
-		report.pass("default route is absent")
+		report.passShared(showSharedPasses, "default route is absent")
 	}
 
 	flags, err := linkFlags(loopbackName)
@@ -118,20 +126,24 @@ func runInternalProbe(expectUID, expectGID int, expectHome string) error {
 	} else if flags&syscall.IFF_UP == 0 {
 		report.fail("loopback is up")
 	} else {
-		report.pass("loopback is up")
+		report.passShared(showSharedPasses, "loopback is up")
 	}
 	if err := probeLoopbackTCP(); err != nil {
 		report.fail("loopback TCP probe: %v", err)
 	} else {
-		report.pass("loopback TCP probe succeeded")
+		report.passShared(showSharedPasses, "loopback TCP probe succeeded")
 	}
-	if err := probeForwardedTCP(os.Getenv(internalForwardTestEnv)); err != nil {
+	if err := probeForwardedTCP(forwardTestAddrs); err != nil {
 		report.fail("forwarded TCP probe: %v", err)
-	} else if os.Getenv(internalForwardTestEnv) != "" {
+	} else if strings.TrimSpace(forwardTestAddrs) != "" {
 		report.pass("forwarded TCP probe succeeded")
 	}
 
 	return report.err()
+}
+
+func showSharedProbePasses(forwardTestAddrs string) bool {
+	return strings.TrimSpace(forwardTestAddrs) == ""
 }
 
 func runEndToEndProbe(uid, gid int, home string) error {

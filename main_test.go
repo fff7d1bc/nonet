@@ -164,6 +164,27 @@ func TestParseCLIDoesNotTreatHelpAfterDashDashAsHelp(t *testing.T) {
 	}
 }
 
+func TestShowSharedProbePasses(t *testing.T) {
+	tests := []struct {
+		name             string
+		forwardTestAddrs string
+		want             bool
+	}{
+		{name: "plain probe", want: true},
+		{name: "blank forwarding addrs", forwardTestAddrs: " \t\n", want: true},
+		{name: "forwarding probe", forwardTestAddrs: "127.0.0.1:12345", want: false},
+		{name: "multiple forwarding addrs", forwardTestAddrs: "127.0.0.1:12345,[::1]:12346", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := showSharedProbePasses(tt.forwardTestAddrs); got != tt.want {
+				t.Fatalf("showSharedProbePasses(%q) = %v, want %v", tt.forwardTestAddrs, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOnlyLoopback(t *testing.T) {
 	if !onlyLoopback([]string{"lo"}) {
 		t.Fatal("onlyLoopback([lo]) = false, want true")
