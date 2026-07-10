@@ -3,16 +3,35 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 type runConfig struct {
 	command        []string
 	forwardOpenTCP bool
 	debug          bool
+}
+
+type childSetupStatus struct {
+	targetStarted bool
+	exitCode      int
+}
+
+type targetExitError struct {
+	exitCode int
+	signal   syscall.Signal
+}
+
+func (e *targetExitError) Error() string {
+	if e.signal != 0 {
+		return fmt.Sprintf("target terminated by signal %s", e.signal)
+	}
+	return fmt.Sprintf("target exited with status %d", e.exitCode)
 }
 
 func runParent(cfg runConfig) error {
@@ -60,6 +79,18 @@ func runWithEnv(cfg runConfig, env []string) error {
 		cfg.debugf("TCP loopback forwarding: disabled")
 	}
 
+	setupReader, setupWriter, err := os.Pipe()
+	if err != nil {
+		cfg.debugf("create setup status pipe failed: %v", err)
+		return fmt.Errorf("create setup status pipe: %w", err)
+	}
+	defer setupReader.Close()
+	defer setupWriter.Close()
+	// The child reports pre-exec failures through this descriptor. Its close-on-
+	// exec flag makes EOF an unambiguous signal that the target was started.
+	syscall.CloseOnExec(int(setupWriter.Fd()))
+	cfg.debugf("setup status pipe created")
+
 	syncReader, syncWriter, err := os.Pipe()
 	if err != nil {
 		cfg.debugf("create sync pipe failed: %v", err)
@@ -76,7 +107,7 @@ func runWithEnv(cfg runConfig, env []string) error {
 	if forwardControl != nil {
 		forwardFD = forwardControl.childFD()
 	}
-	child, err := spawnInUserNamespace(resolvedArgs, env, int(syncReader.Fd()), forwardFD, forwardSpec)
+	child, err := spawnInUserNamespace(resolvedArgs, env, int(syncReader.Fd()), forwardFD, int(setupWriter.Fd()), forwardSpec)
 	if err != nil {
 		if forwardControl != nil {
 			forwardControl.closeChild()
@@ -87,6 +118,7 @@ func runWithEnv(cfg runConfig, env []string) error {
 	defer child.close()
 	cfg.debugf("spawned helper: pid=%d", child.pid)
 	syncReader.Close()
+	setupWriter.Close()
 	if forwardControl != nil {
 		forwardControl.closeChild()
 	}
@@ -95,7 +127,7 @@ func runWithEnv(cfg runConfig, env []string) error {
 		// If mapping setup fails, the child is still blocked on the sync pipe.
 		// Kill and reap it so a paused helper is not left behind.
 		child.kill()
-		_ = child.wait()
+		_, _ = child.wait()
 		cfg.debugf("install identity mappings failed: %v", err)
 		return err
 	}
@@ -104,7 +136,7 @@ func runWithEnv(cfg runConfig, env []string) error {
 		// A failed release write leaves the child unable to make progress, so
 		// treat it the same as mapping setup failure.
 		child.kill()
-		_ = child.wait()
+		_, _ = child.wait()
 		cfg.debugf("release helper failed: %v", err)
 		return fmt.Errorf("release helper: %w", err)
 	}
@@ -112,20 +144,42 @@ func runWithEnv(cfg runConfig, env []string) error {
 	cfg.debugf("released helper")
 
 	var bridge *forwardBridge
+	var bridgeSetupErr error
 	if forwardControl != nil {
 		cfg.debugf("waiting for forwarding listener handoff")
 		bridge, err = forwardControl.startHostBridge(forwardSpecs)
 		forwardControl.closeParent()
 		if err != nil {
-			child.kill()
-			_ = child.wait()
 			cfg.debugf("TCP loopback forwarding setup failed: %v", err)
-			return fmt.Errorf("set up TCP loopback forwarding: %w", err)
+			bridgeSetupErr = fmt.Errorf("set up TCP loopback forwarding: %w", err)
+		} else {
+			cfg.debugf("started host forwarding bridge")
 		}
-		cfg.debugf("started host forwarding bridge")
 	}
 
-	err = child.wait()
+	setupStatus, setupErr := readChildSetupStatus(setupReader)
+	if setupErr != nil {
+		child.kill()
+		_, _ = child.wait()
+		if bridge != nil {
+			bridge.close()
+			_ = bridge.wait()
+		}
+		return setupErr
+	}
+	if bridgeSetupErr != nil && setupStatus.targetStarted {
+		child.kill()
+	}
+
+	waitStatus, waitErr := child.wait()
+	if waitErr != nil {
+		err = fmt.Errorf("wait for command: %w", waitErr)
+	} else {
+		err = classifyChildStatus(waitStatus, setupStatus)
+	}
+	if bridgeSetupErr != nil && setupStatus.targetStarted {
+		err = bridgeSetupErr
+	}
 	if err != nil {
 		cfg.debugf("wrapped command finished with error: %v", err)
 	} else {
@@ -145,6 +199,37 @@ func runWithEnv(cfg runConfig, env []string) error {
 		}
 	}
 	return err
+}
+
+func readChildSetupStatus(reader io.Reader) (childSetupStatus, error) {
+	var code [1]byte
+	n, err := reader.Read(code[:])
+	if errors.Is(err, io.EOF) && n == 0 {
+		return childSetupStatus{targetStarted: true}, nil
+	}
+	if err != nil {
+		return childSetupStatus{}, fmt.Errorf("read child setup status: %w", err)
+	}
+	if n != len(code) {
+		return childSetupStatus{}, errors.New("read child setup status: short message")
+	}
+	return childSetupStatus{exitCode: int(code[0])}, nil
+}
+
+func classifyChildStatus(status syscall.WaitStatus, setup childSetupStatus) error {
+	if !setup.targetStarted {
+		if msg, ok := childExitDescription(setup.exitCode); ok {
+			return errors.New(msg)
+		}
+		return fmt.Errorf("helper failed before exec with status %d", setup.exitCode)
+	}
+	if status.Signaled() {
+		return &targetExitError{signal: status.Signal()}
+	}
+	if status.Exited() && status.ExitStatus() != 0 {
+		return &targetExitError{exitCode: status.ExitStatus()}
+	}
+	return nil
 }
 
 func (cfg runConfig) debugf(format string, args ...any) {

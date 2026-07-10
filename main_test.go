@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -243,6 +244,73 @@ func TestChildExitDescription(t *testing.T) {
 	}
 	if _, ok := childExitDescription(255); ok {
 		t.Fatal("childExitDescription(255) reported known exit code")
+	}
+}
+
+func TestReadChildSetupStatus(t *testing.T) {
+	started, err := readChildSetupStatus(strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("readChildSetupStatus() EOF error = %v", err)
+	}
+	if !started.targetStarted {
+		t.Fatal("readChildSetupStatus() targetStarted = false, want true")
+	}
+
+	failed, err := readChildSetupStatus(strings.NewReader(string([]byte{childExitWaitSync})))
+	if err != nil {
+		t.Fatalf("readChildSetupStatus() code error = %v", err)
+	}
+	if failed.targetStarted || failed.exitCode != childExitWaitSync {
+		t.Fatalf("readChildSetupStatus() = %+v, want setup code %d", failed, childExitWaitSync)
+	}
+}
+
+func TestClassifyChildStatusDistinguishesTargetExit(t *testing.T) {
+	status := syscall.WaitStatus(childExitWaitSync << 8)
+	err := classifyChildStatus(status, childSetupStatus{targetStarted: true})
+	targetErr, ok := err.(*targetExitError)
+	if !ok || targetErr.exitCode != childExitWaitSync {
+		t.Fatalf("classifyChildStatus() = %T %v, want target exit %d", err, err, childExitWaitSync)
+	}
+
+	err = classifyChildStatus(status, childSetupStatus{exitCode: childExitWaitSync})
+	if _, ok := err.(*targetExitError); ok {
+		t.Fatalf("classifyChildStatus() = %T, want setup error", err)
+	}
+}
+
+func TestExitMainPreservesTargetTermination(t *testing.T) {
+	const helperEnv = "NONET_TEST_EXIT_MAIN"
+	if mode := os.Getenv(helperEnv); mode != "" {
+		switch mode {
+		case "exit":
+			exitMain(&targetExitError{exitCode: childExitWaitSync})
+		case "signal":
+			exitMain(&targetExitError{signal: syscall.SIGTERM})
+		}
+		return
+	}
+
+	for _, mode := range []string{"exit", "signal"} {
+		t.Run(mode, func(t *testing.T) {
+			cmd := exec.Command(selfExePath, "-test.run=^TestExitMainPreservesTargetTermination$")
+			cmd.Env = append(os.Environ(), helperEnv+"="+mode)
+			err := cmd.Run()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("helper error = %v, want *exec.ExitError", err)
+			}
+			status, ok := exitErr.Sys().(syscall.WaitStatus)
+			if !ok {
+				t.Fatalf("helper status = %T, want syscall.WaitStatus", exitErr.Sys())
+			}
+			if mode == "exit" && (!status.Exited() || status.ExitStatus() != childExitWaitSync) {
+				t.Fatalf("exit helper status = %v, want exit %d", status, childExitWaitSync)
+			}
+			if mode == "signal" && (!status.Signaled() || status.Signal() != syscall.SIGTERM) {
+				t.Fatalf("signal helper status = %v, want SIGTERM", status)
+			}
+		})
 	}
 }
 

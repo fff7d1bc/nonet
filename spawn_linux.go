@@ -25,10 +25,19 @@ package main
 struct child_state {
 	int sync_fd;
 	int forward_fd;
+	int setup_fd;
 	char *forward_spec;
 	char **argv;
 	char **envp;
 };
+
+static void child_fail(struct child_state *state, unsigned char code) {
+	ssize_t written;
+	do {
+		written = write(state->setup_fd, &code, 1);
+	} while (written < 0 && errno == EINTR);
+	_exit(code);
+}
 
 static int set_loopback_up(void) {
 	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -96,28 +105,28 @@ static int child_main(void *arg) {
 	// Block immediately until the Go parent installs uid/gid mappings for this
 	// just-cloned child. Doing the wait here keeps the race window tiny.
 	if (read(state->sync_fd, &byte, 1) != 1) {
-		_exit(200);
+		child_fail(state, 200);
 	}
 	close(state->sync_fd);
 
 	if (unshare(CLONE_NEWNET) != 0) {
-		_exit(201);
+		child_fail(state, 201);
 	}
 	int err = set_loopback_up();
 	if (err != 0) {
-		_exit(202);
+		child_fail(state, 202);
 	}
 	if (state->forward_fd >= 0 && state->forward_spec != NULL && state->forward_spec[0] != '\0') {
 		// This sysctl is per-network-namespace. Lower it before binding
 		// forwarded listeners so snapshot ports below 1024 work consistently.
 		err = allow_unprivileged_low_ports();
 		if (err != 0) {
-			_exit(205);
+			child_fail(state, 205);
 		}
 
 		int ready_pipe[2];
 		if (pipe(ready_pipe) != 0) {
-			_exit(204);
+			child_fail(state, 204);
 		}
 
 		// The setup helper must run in the just-created network namespace so it
@@ -127,7 +136,7 @@ static int child_main(void *arg) {
 		if (forwarder < 0) {
 			close(ready_pipe[0]);
 			close(ready_pipe[1]);
-			_exit(204);
+			child_fail(state, 204);
 		}
 		if (forwarder == 0) {
 			char control_fd[32];
@@ -156,23 +165,23 @@ static int child_main(void *arg) {
 		if (read(ready_pipe[0], &byte, 1) != 1) {
 			close(ready_pipe[0]);
 			wait_for_child(forwarder, NULL);
-			_exit(204);
+			child_fail(state, 204);
 		}
 		close(ready_pipe[0]);
 		int forwarder_status = 0;
 		if (wait_for_child(forwarder, &forwarder_status) != 0) {
-			_exit(204);
+			child_fail(state, 204);
 		}
 		if (!WIFEXITED(forwarder_status) || WEXITSTATUS(forwarder_status) != 0) {
-			_exit(204);
+			child_fail(state, 204);
 		}
 		close(state->forward_fd);
 	}
 	execve(state->argv[0], state->argv, state->envp);
-	_exit(203);
+	child_fail(state, 203);
 }
 
-static int nonet_spawn_child(char **argv, char **envp, int sync_fd, int forward_fd, char *forward_spec, pid_t *pid_out, void **stack_out, void **state_out) {
+static int nonet_spawn_child(char **argv, char **envp, int sync_fd, int forward_fd, int setup_fd, char *forward_spec, pid_t *pid_out, void **stack_out, void **state_out) {
 	void *stack = malloc(STACK_SIZE);
 	if (stack == NULL) {
 		return ENOMEM;
@@ -186,6 +195,7 @@ static int nonet_spawn_child(char **argv, char **envp, int sync_fd, int forward_
 
 	state->sync_fd = sync_fd;
 	state->forward_fd = forward_fd;
+	state->setup_fd = setup_fd;
 	state->forward_spec = forward_spec;
 	state->argv = argv;
 	state->envp = envp;
@@ -220,7 +230,6 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"os"
 	"syscall"
 	"unsafe"
 )
@@ -243,7 +252,7 @@ type spawnedChild struct {
 	forwardSpec *C.char
 }
 
-func spawnInUserNamespace(commandArgs, env []string, syncFD, forwardFD int, forwardSpec string) (*spawnedChild, error) {
+func spawnInUserNamespace(commandArgs, env []string, syncFD, forwardFD, setupFD int, forwardSpec string) (*spawnedChild, error) {
 	// Keep argv/envp in C memory for the lifetime of the helper process because
 	// child_main ultimately passes them straight to execve(2).
 	cargv := make([]*C.char, 0, len(commandArgs)+1)
@@ -266,7 +275,7 @@ func spawnInUserNamespace(commandArgs, env []string, syncFD, forwardFD int, forw
 	var pid C.pid_t
 	var stack unsafe.Pointer
 	var state unsafe.Pointer
-	rc := C.nonet_spawn_child((**C.char)(unsafe.Pointer(&cargv[0])), (**C.char)(unsafe.Pointer(&cenv[0])), C.int(syncFD), C.int(forwardFD), cForwardSpec, &pid, &stack, &state)
+	rc := C.nonet_spawn_child((**C.char)(unsafe.Pointer(&cargv[0])), (**C.char)(unsafe.Pointer(&cenv[0])), C.int(syncFD), C.int(forwardFD), C.int(setupFD), cForwardSpec, &pid, &stack, &state)
 	if rc != 0 {
 		for _, arg := range cargv[:len(cargv)-1] {
 			C.free(unsafe.Pointer(arg))
@@ -319,30 +328,15 @@ func (c *spawnedChild) kill() {
 	}
 }
 
-func (c *spawnedChild) wait() error {
+func (c *spawnedChild) wait() (syscall.WaitStatus, error) {
 	var status syscall.WaitStatus
-	_, err := syscall.Wait4(c.pid, &status, 0, nil)
-	if err != nil {
-		return err
-	}
-	if status.Signaled() {
-		return fmt.Errorf("run command: terminated by signal %s", status.Signal())
-	}
-	if status.Exited() {
-		code := status.ExitStatus()
-		if code == 0 {
-			return nil
+	for {
+		_, err := syscall.Wait4(c.pid, &status, 0, nil)
+		if errors.Is(err, syscall.EINTR) {
+			continue
 		}
-		// The helper exits with reserved codes for setup failures so the Go side
-		// can return a readable error instead of just "exit status N".
-		if msg, ok := childExitDescription(code); ok {
-			return errors.New(msg)
-		}
-		// Any other exit code belongs to the exec'd target command. Preserve it
-		// as this wrapper's process status instead of converting it to an error.
-		os.Exit(code)
+		return status, err
 	}
-	return nil
 }
 
 func childExitDescription(code int) (string, bool) {
