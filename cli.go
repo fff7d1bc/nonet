@@ -111,13 +111,11 @@ func parseCLI(args []string) (cliConfig, error) {
 		fmt.Fprintln(fs.Output(), "")
 		fmt.Fprintln(fs.Output(), "Use -- to stop option parsing if the command name starts with '-'.")
 	}
-	if wantsHelp(args) {
-		fs.Usage()
-		cfg.showHelp = true
-		return cfg, nil
-	}
-
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			cfg.showHelp = true
+			return cfg, nil
+		}
 		return cfg, err
 	}
 	// Self-test is a standalone diagnostic mode. Extra arguments would make it
@@ -134,20 +132,6 @@ func parseCLI(args []string) (cliConfig, error) {
 
 	cfg.command = commandOrShell(fs.Args())
 	return cfg, nil
-}
-
-func wantsHelp(args []string) bool {
-	for _, arg := range args {
-		// Respect "--" as the standard "end of options" marker so a literal
-		// command named "-h" or "--help" is still runnable.
-		if arg == "--" {
-			return false
-		}
-		if arg == "-h" || arg == "--help" || arg == "-help" {
-			return true
-		}
-	}
-	return false
 }
 
 func internalIntEnv(name string) (int, error) {

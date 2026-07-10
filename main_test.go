@@ -164,6 +164,34 @@ func TestParseCLIDoesNotTreatHelpAfterDashDashAsHelp(t *testing.T) {
 	}
 }
 
+func TestParseCLIStopsLookingForHelpAtCommand(t *testing.T) {
+	cfg, err := parseCLI([]string{"echo", "--help", "-h", "-help"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if cfg.showHelp {
+		t.Fatal("parseCLI().showHelp = true, want false")
+	}
+	want := []string{"echo", "--help", "-h", "-help"}
+	if !reflect.DeepEqual(cfg.command, want) {
+		t.Fatalf("parseCLI().command = %v, want %v", cfg.command, want)
+	}
+}
+
+func TestParseCLIRecognizesLeadingHelp(t *testing.T) {
+	for _, arg := range []string{"-h", "--help", "-help"} {
+		t.Run(arg, func(t *testing.T) {
+			cfg, err := parseCLI([]string{arg})
+			if err != nil {
+				t.Fatalf("parseCLI() error = %v", err)
+			}
+			if !cfg.showHelp {
+				t.Fatal("parseCLI().showHelp = false, want true")
+			}
+		})
+	}
+}
+
 func TestShowSharedProbePasses(t *testing.T) {
 	tests := []struct {
 		name             string
