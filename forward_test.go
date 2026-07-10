@@ -74,7 +74,7 @@ func TestForwardedFDPassing(t *testing.T) {
 	defer writeFile.Close()
 	spec := tcpForwardSpec{family: forwardFamilyIPv4, port: 8080}
 
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_SEQPACKET, 0)
 	if err != nil {
 		t.Fatalf("Socketpair() error = %v", err)
 	}
@@ -113,5 +113,57 @@ func TestForwardedFDPassing(t *testing.T) {
 	}
 	if buf[0] != 42 {
 		t.Fatalf("received fd read byte = %d, want 42", buf[0])
+	}
+}
+
+func TestForwardedFDRejectsMalformedRecord(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_SEQPACKET, 0)
+	if err != nil {
+		t.Fatalf("Socketpair() error = %v", err)
+	}
+	defer syscall.Close(fds[0])
+	defer syscall.Close(fds[1])
+
+	if err := syscall.Sendmsg(fds[1], []byte{forwardFamilyIPv4, 0}, nil, nil, 0); err != nil {
+		t.Fatalf("Sendmsg() error = %v", err)
+	}
+	if _, _, err := recvForwardedFD(fds[0]); err == nil {
+		t.Fatal("recvForwardedFD() error = nil, want malformed-record error")
+	}
+}
+
+func TestForwardedFDPreservesRecordBoundaries(t *testing.T) {
+	readFile, writeFile, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe() error = %v", err)
+	}
+	defer readFile.Close()
+	defer writeFile.Close()
+
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_SEQPACKET, 0)
+	if err != nil {
+		t.Fatalf("Socketpair() error = %v", err)
+	}
+	defer syscall.Close(fds[0])
+	defer syscall.Close(fds[1])
+
+	wants := []tcpForwardSpec{
+		{family: forwardFamilyIPv4, port: 8080},
+		{family: forwardFamilyIPv6, port: 8081},
+	}
+	for _, want := range wants {
+		if err := sendForwardedFD(fds[1], want, int(readFile.Fd())); err != nil {
+			t.Fatalf("sendForwardedFD() error = %v", err)
+		}
+	}
+	for _, want := range wants {
+		got, fd, err := recvForwardedFD(fds[0])
+		if err != nil {
+			t.Fatalf("recvForwardedFD() error = %v", err)
+		}
+		_ = syscall.Close(fd)
+		if got != want {
+			t.Fatalf("recvForwardedFD() spec = %v, want %v", got, want)
+		}
 	}
 }

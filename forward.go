@@ -201,7 +201,7 @@ func decodeTCPForwardSpecs(encoded string) ([]tcpForwardSpec, error) {
 }
 
 func newForwardControl() (*forwardControl, error) {
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_SEQPACKET, 0)
 	if err != nil {
 		return nil, fmt.Errorf("create forward control socket: %w", err)
 	}
@@ -271,32 +271,62 @@ func recvForwardedListener(controlFD int) (tcpForwardSpec, *net.TCPListener, err
 func recvForwardedFD(controlFD int) (tcpForwardSpec, int, error) {
 	var data [3]byte
 	oob := make([]byte, syscall.CmsgSpace(4))
-	n, oobn, _, _, err := syscall.Recvmsg(controlFD, data[:], oob, 0)
+	n, oobn, recvFlags, _, err := syscall.Recvmsg(controlFD, data[:], oob, syscall.MSG_CMSG_CLOEXEC)
 	if err != nil {
 		return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded fd: %w", err)
 	}
+	fds, err := parseForwardedRights(oob[:oobn])
+	if err != nil {
+		return tcpForwardSpec{}, -1, err
+	}
+	if recvFlags&(syscall.MSG_TRUNC|syscall.MSG_CTRUNC) != 0 {
+		closeFDs(fds)
+		return tcpForwardSpec{}, -1, errors.New("receive forwarded fd: truncated message")
+	}
 	if n == 0 {
+		closeFDs(fds)
 		return tcpForwardSpec{}, -1, io.EOF
 	}
 	if n != len(data) {
+		closeFDs(fds)
 		return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded fd: short header")
 	}
-	messages, err := syscall.ParseSocketControlMessage(oob[:oobn])
-	if err != nil {
-		return tcpForwardSpec{}, -1, fmt.Errorf("parse forwarded fd control message: %w", err)
+	if len(fds) != 1 {
+		closeFDs(fds)
+		return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded fd: got %d fds, want 1", len(fds))
 	}
+	if data[0] != forwardFamilyIPv4 && data[0] != forwardFamilyIPv6 {
+		closeFDs(fds)
+		return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded fd: unsupported family %d", data[0])
+	}
+	port := binary.BigEndian.Uint16(data[1:3])
+	return tcpForwardSpec{family: data[0], port: port}, fds[0], nil
+}
+
+func parseForwardedRights(oob []byte) ([]int, error) {
+	messages, err := syscall.ParseSocketControlMessage(oob)
+	if err != nil {
+		return nil, fmt.Errorf("parse forwarded fd control message: %w", err)
+	}
+	var allFDs []int
 	for _, message := range messages {
-		fds, err := syscall.ParseUnixRights(&message)
-		if err != nil {
+		if message.Header.Level != syscall.SOL_SOCKET || message.Header.Type != syscall.SCM_RIGHTS {
 			continue
 		}
-		if len(fds) > 0 {
-			port := binary.BigEndian.Uint16(data[1:3])
-			spec := tcpForwardSpec{family: data[0], port: port}
-			return spec, fds[0], nil
+		fds, err := syscall.ParseUnixRights(&message)
+		if err != nil {
+			closeFDs(allFDs)
+			return nil, fmt.Errorf("parse forwarded fd rights: %w", err)
 		}
+		allFDs = append(allFDs, fds...)
 	}
-	return tcpForwardSpec{}, -1, fmt.Errorf("receive forwarded fd: missing fd")
+	return allFDs, nil
+}
+
+func closeFDs(fds []int) {
+	for _, fd := range fds {
+		_ = syscall.Close(fd)
+	}
 }
 
 func tcpListenerFromFD(fd int) (*net.TCPListener, error) {
