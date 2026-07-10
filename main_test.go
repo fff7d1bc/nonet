@@ -321,6 +321,19 @@ func TestHasDefaultRouteV6DetectsNonLoopbackDefault(t *testing.T) {
 	}
 }
 
+func TestHasDefaultRouteAllowsMissingIPv6Routes(t *testing.T) {
+	v4Path := writeTempFile(t, "route-v4-no-default", "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n")
+	missing := v4Path + "-missing"
+
+	got, err := hasDefaultRouteFiles(v4Path, missing)
+	if err != nil {
+		t.Fatalf("hasDefaultRouteFiles() error = %v", err)
+	}
+	if got {
+		t.Fatal("hasDefaultRouteFiles() = true, want false")
+	}
+}
+
 func writeTempFile(t *testing.T, pattern, content string) string {
 	t.Helper()
 

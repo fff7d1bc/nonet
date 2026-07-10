@@ -285,14 +285,24 @@ func probeLoopbackTCP() error {
 func hasDefaultRoute() (bool, error) {
 	// Parsing procfs keeps the check dependency-free; iproute2 would consult the
 	// same kernel routing data through netlink.
-	v4, err := hasDefaultRouteV4("/proc/net/route")
+	return hasDefaultRouteFiles("/proc/net/route", "/proc/net/ipv6_route")
+}
+
+func hasDefaultRouteFiles(v4Path, v6Path string) (bool, error) {
+	v4, err := hasDefaultRouteV4(v4Path)
 	if err != nil {
 		return false, err
 	}
 	if v4 {
 		return true, nil
 	}
-	return hasDefaultRouteV6("/proc/net/ipv6_route")
+	v6, err := hasDefaultRouteV6(v6Path)
+	if errors.Is(err, os.ErrNotExist) {
+		// IPv6 is optional for nonet. Kernels built without it do not expose the
+		// route file, which is equivalent to having no IPv6 default route.
+		return false, nil
+	}
+	return v6, err
 }
 
 func hasDefaultRouteV4(path string) (bool, error) {
