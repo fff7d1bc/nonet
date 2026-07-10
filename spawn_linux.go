@@ -12,6 +12,7 @@ package main
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -26,6 +27,7 @@ struct child_state {
 	int sync_fd;
 	int forward_fd;
 	int setup_fd;
+	pid_t parent_pid;
 	char *forward_spec;
 	char **argv;
 	char **envp;
@@ -101,6 +103,16 @@ static int wait_for_child(pid_t pid, int *status_out) {
 static int child_main(void *arg) {
 	struct child_state *state = (struct child_state *)arg;
 	char byte;
+
+	// The Go parent owns the bridge and lifecycle bookkeeping. If it disappears,
+	// the target must not remain detached in a namespace that can no longer
+	// provide the behavior the caller requested.
+	if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0) {
+		child_fail(state, 206);
+	}
+	if (getppid() != state->parent_pid) {
+		child_fail(state, 206);
+	}
 
 	// Block immediately until the Go parent installs uid/gid mappings for this
 	// just-cloned child. Doing the wait here keeps the race window tiny.
@@ -196,6 +208,7 @@ static int nonet_spawn_child(char **argv, char **envp, int sync_fd, int forward_
 	state->sync_fd = sync_fd;
 	state->forward_fd = forward_fd;
 	state->setup_fd = setup_fd;
+	state->parent_pid = getpid();
 	state->forward_spec = forward_spec;
 	state->argv = argv;
 	state->envp = envp;
@@ -241,6 +254,7 @@ const (
 	childExitExecTarget     = 203
 	childExitForwarderStart = 204
 	childExitLowPortPolicy  = 205
+	childExitParentDeath    = 206
 )
 
 type spawnedChild struct {
@@ -328,6 +342,13 @@ func (c *spawnedChild) kill() {
 	}
 }
 
+func (c *spawnedChild) signal(sig syscall.Signal) error {
+	if c.pid <= 0 {
+		return syscall.ESRCH
+	}
+	return syscall.Kill(c.pid, sig)
+}
+
 func (c *spawnedChild) wait() (syscall.WaitStatus, error) {
 	var status syscall.WaitStatus
 	for {
@@ -353,6 +374,8 @@ func childExitDescription(code int) (string, bool) {
 		return "helper could not set up TCP loopback forwarding inside the network namespace", true
 	case childExitLowPortPolicy:
 		return "helper could not allow low-port TCP forwarding inside the network namespace", true
+	case childExitParentDeath:
+		return "helper could not tie the command lifetime to the nonet parent", true
 	default:
 		return "", false
 	}

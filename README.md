@@ -70,6 +70,10 @@ Inside `nonet`:
 - binding `127.0.0.1:1234` inside `nonet` does not conflict with the host binding the same address and port
 - the final command still sees your visible UID/GID
 
+If `nonet` receives `SIGTERM`, it relays the signal to the final command and
+waits for it to finish. If the wrapper dies before it can do that, the kernel
+terminates the direct child so the command is not left detached from `nonet`.
+
 Sometimes the right behavior is a fully private loopback. Other times, the
 command should still be cut off from the outside network but needs to call an
 already-running local service on the host, such as a desktop session API, a

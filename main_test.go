@@ -242,9 +242,41 @@ func TestChildExitDescription(t *testing.T) {
 	if msg, ok := childExitDescription(childExitLowPortPolicy); !ok || msg == "" {
 		t.Fatalf("childExitDescription() = %q, %v, want non-empty message and true", msg, ok)
 	}
+	if msg, ok := childExitDescription(childExitParentDeath); !ok || msg == "" {
+		t.Fatalf("childExitDescription() = %q, %v, want non-empty message and true", msg, ok)
+	}
 	if _, ok := childExitDescription(255); ok {
 		t.Fatal("childExitDescription(255) reported known exit code")
 	}
+}
+
+func TestWaitForTargetSignalRelaysSIGTERM(t *testing.T) {
+	process, err := os.StartProcess("/bin/sleep", []string{"sleep", "60"}, &os.ProcAttr{
+		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
+	})
+	if err != nil {
+		t.Fatalf("StartProcess() error = %v", err)
+	}
+	pid := process.Pid
+	if err := process.Release(); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+	defer func() {
+		if pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}()
+
+	termCh := make(chan os.Signal, 1)
+	termCh <- syscall.SIGTERM
+	status, err := waitForTargetSignal(&spawnedChild{pid: pid}, termCh)
+	if err != nil {
+		t.Fatalf("waitForTargetSignal() error = %v", err)
+	}
+	if !status.Signaled() || status.Signal() != syscall.SIGTERM {
+		t.Fatalf("waitForTargetSignal() status = %v, want SIGTERM", status)
+	}
+	pid = -1
 }
 
 func TestReadChildSetupStatus(t *testing.T) {

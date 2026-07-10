@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -171,7 +172,13 @@ func runWithEnv(cfg runConfig, env []string) error {
 		child.kill()
 	}
 
-	waitStatus, waitErr := child.wait()
+	var waitStatus syscall.WaitStatus
+	var waitErr error
+	if setupStatus.targetStarted && bridgeSetupErr == nil {
+		waitStatus, waitErr = waitForTarget(child)
+	} else {
+		waitStatus, waitErr = child.wait()
+	}
 	if waitErr != nil {
 		err = fmt.Errorf("wait for command: %w", waitErr)
 	} else {
@@ -230,6 +237,42 @@ func classifyChildStatus(status syscall.WaitStatus, setup childSetupStatus) erro
 		return &targetExitError{exitCode: status.ExitStatus()}
 	}
 	return nil
+}
+
+type childWaitResult struct {
+	status syscall.WaitStatus
+	err    error
+}
+
+func waitForTarget(child *spawnedChild) (syscall.WaitStatus, error) {
+	termCh := make(chan os.Signal, 1)
+	signal.Notify(termCh, syscall.SIGTERM)
+	defer signal.Stop(termCh)
+	return waitForTargetSignal(child, termCh)
+}
+
+func waitForTargetSignal(child *spawnedChild, termCh <-chan os.Signal) (syscall.WaitStatus, error) {
+	waitCh := make(chan childWaitResult, 1)
+	go func() {
+		status, err := child.wait()
+		waitCh <- childWaitResult{status: status, err: err}
+	}()
+
+	for {
+		select {
+		case <-termCh:
+			if err := child.signal(syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+				child.kill()
+				result := <-waitCh
+				if result.err != nil {
+					return result.status, result.err
+				}
+				return result.status, fmt.Errorf("forward SIGTERM to command: %w", err)
+			}
+		case result := <-waitCh:
+			return result.status, result.err
+		}
+	}
 }
 
 func (cfg runConfig) debugf(format string, args ...any) {
