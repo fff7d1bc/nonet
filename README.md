@@ -80,9 +80,10 @@ already-running local service on the host, such as a desktop session API, a
 local credential helper, or a test service.
 
 With `-F` / `--forward-open-tcp`, `nonet` takes a startup snapshot of host TCP
-listeners bound exactly to `127.0.0.1` and `::1`. It then binds the same ports
-inside the isolated namespace and proxies accepted TCP connections back to those
-host loopback services.
+address/port endpoints listening exactly on `127.0.0.1` and `::1`. It then binds
+the same endpoints inside the isolated namespace. For each accepted connection,
+the parent connects to whichever host service is listening on that snapshotted
+endpoint at that time; the snapshot does not pin a particular process or socket.
 
 When forwarding is enabled, `nonet` also lowers the isolated namespace's
 low-port bind threshold so forwarded services can keep their original ports,
@@ -95,7 +96,13 @@ Forwarding is intentionally narrow:
 - exact `127.0.0.1` and `::1` only
 - no UDP
 - no `0.0.0.0` or `::` wildcard listeners
-- no services that start after `nonet` starts
+- no new address/port endpoints that were not listening when `nonet` started
+
+A service that later takes over a snapshotted endpoint is therefore reachable.
+Forwarding also reserves those ports inside the isolated namespace, so the final
+command cannot bind them itself. Because every matching endpoint is forwarded,
+a local HTTP, SOCKS, or similar proxy can provide indirect outside-network access
+to a command that knows how to use it.
 
 If no matching listeners exist, `-F` is a no-op and the command still runs.
 
