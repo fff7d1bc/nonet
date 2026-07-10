@@ -259,6 +259,7 @@ It should not be treated as a hardened security container.
 
 ## Requirements
 
+- Go 1.26 or newer to build from source
 - user namespaces available on the target host
 - network namespaces available on the target host
 - a runtime policy that allows this style of unprivileged namespace creation

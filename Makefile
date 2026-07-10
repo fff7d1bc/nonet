@@ -1,6 +1,7 @@
 APP := nonet
 STATIC_APP := $(APP)-static
 BUILD_DIR := $(CURDIR)/build
+GOTOOLCHAIN := local
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 PLATFORM := $(GOOS)-$(GOARCH)
@@ -26,6 +27,7 @@ export GOTMPDIR
 export GOTELEMETRYDIR
 export GOENV
 export GOFLAGS
+export GOTOOLCHAIN
 export GOTELEMETRY=off
 
 .PHONY: all build static test run install clean
